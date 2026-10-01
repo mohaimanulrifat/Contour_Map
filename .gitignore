@@ -9,3 +9,8 @@ dist/
 .vscode/
 *.egg-info/
 contour_settings.json
+
+# generated at build time
+contourmap/build_info.py
+dist/
+release/

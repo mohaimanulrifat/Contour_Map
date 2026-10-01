@@ -280,6 +280,7 @@ class PillButton(tk.Canvas):
         self._font, self._bw, self._bh = f, w, h
         self._bhover = self._down = False
         self._enabled = True
+        self._active = False
         self.bind("<Enter>", lambda e: self._update(hover=True))
         self.bind("<Leave>", lambda e: self._update(hover=False, down=False))
         self.bind("<ButtonPress-1>", lambda e: self._update(down=True))
@@ -305,6 +306,8 @@ class PillButton(tk.Canvas):
         if self._style == "primary":
             fill = C.accent_deep if self._down else C.accent_light if self._bhover else C.accent
             return fill, fill, C.bg
+        if self._active:
+            return C.indigo_dark, C.accent_light, "#ffffff"
         if self._style == "secondary":
             fill = C.plum if (self._bhover or self._down) else self["bg"]
             return fill, (C.accent_light if self._bhover else C.pill_line), C.accent_pale
@@ -320,6 +323,12 @@ class PillButton(tk.Canvas):
     def set_enabled(self, enabled: bool) -> None:
         if enabled != self._enabled:
             self._enabled = enabled
+            self._draw()
+
+    def set_active(self, active: bool) -> None:
+        """Toggle look (for Pan / Zoom style buttons)."""
+        if active != self._active:
+            self._active = active
             self._draw()
 
     def set_text(self, text: str) -> None:
@@ -370,7 +379,7 @@ class TabBar(tk.Frame):
     def add(self, key: str, number: str, text: str) -> None:
         cell = tk.Frame(self, bg=self._bg, cursor="hand2")
         cell.pack(side="left", padx=(0, px(18)))
-        lab = tk.Label(cell, text=f"{number}  {text.upper()}", bg=self._bg, fg=C.muted,
+        lab = tk.Label(cell, text=(f"{number}  " if number else "") + text.upper(), bg=self._bg, fg=C.muted,
                        font=font(9, True), cursor="hand2")
         lab.pack(anchor="w")
         rule = tk.Frame(cell, bg=self._bg, height=px(2))
@@ -451,6 +460,22 @@ def kicker(parent, number: str, text: str, bg=C.card) -> tk.Frame:
         tk.Label(row, text=number, bg=bg, fg=C.accent, font=font(9, True)).pack(side="left", padx=(0, px(8)))
     tk.Label(row, text=text.upper(), bg=bg, fg=C.accent_pale, font=font(9, True)).pack(side="left")
     return row
+
+
+def rounded_image(path: str, height: int, radius_frac: float = 0.18, master=None):
+    """A PhotoImage of `path` scaled to `height` px with rounded corners (None if Pillow fails)."""
+    try:
+        from PIL import Image, ImageDraw, ImageTk
+        img = Image.open(path).convert("RGBA")
+        w = max(1, int(img.width * height / img.height))
+        img = img.resize((w, height), Image.LANCZOS)
+        mask = Image.new("L", (w * 4, height * 4), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, w * 4 - 1, height * 4 - 1),
+                                               radius=int(min(w, height) * 4 * radius_frac), fill=255)
+        img.putalpha(mask.resize((w, height), Image.LANCZOS))
+        return ImageTk.PhotoImage(img, master=master)
+    except Exception:
+        return None
 
 
 def gradient_strip(canvas: tk.Canvas, colors) -> None:

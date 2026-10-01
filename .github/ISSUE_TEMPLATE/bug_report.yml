@@ -1,0 +1,81 @@
+name: Report a problem
+description: Something in Contour Map Generator did not work, or a map came out wrong.
+title: "Problem: "
+labels: ["problem"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Sorry it went wrong. The details below are what make a problem findable.
+
+        **This page is public.** Before you paste a log, read through it: it contains
+        the names and folders of your own files. Remove anything you would rather not
+        show, or email it instead.
+
+  - type: textarea
+    id: version
+    attributes:
+      label: Version info
+      description: >
+        In the app, open Help, About, and click "Copy version info". Then paste it here.
+        It is just version numbers: the app, Windows, and the parts inside it.
+      render: text
+      placeholder: |
+        Contour Map Generator 1.0.0 (built 2026-10-01)
+        Windows 11 (build 10.0.26200), AMD64
+        Python 3.12.10
+        matplotlib 3.10.0
+    validations:
+      required: true
+
+  - type: textarea
+    id: what_happened
+    attributes:
+      label: What happened?
+      description: What you did, and what the app did.
+      placeholder: |
+        1. Opened my survey workbook with 5 sheets
+        2. Chose cubic interpolation and clicked Generate maps
+        3. Sheet 3 failed with "The points cannot be triangulated"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect instead?
+      placeholder: A map for every sheet.
+    validations:
+      required: true
+
+  - type: textarea
+    id: log
+    attributes:
+      label: The Results box, if it helps
+      description: >
+        Select the text in the Results box and copy it. Check it first for file names you
+        would rather not share.
+      render: text
+    validations:
+      required: false
+
+  - type: textarea
+    id: sample
+    attributes:
+      label: A sample data file
+      description: >
+        Optional, and the single most useful thing for finding a problem. A small file
+        that shows the same fault is ideal, with nothing private in it. Drag the file into
+        this box to attach it, or zip it first if GitHub refuses the type.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before sending
+      options:
+        - label: I looked through the log and removed anything private.
+          required: false
+        - label: I am using the latest version (Help, Check for updates).
+          required: false

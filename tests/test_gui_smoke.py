@@ -122,3 +122,75 @@ def test_settings_are_remembered_between_sessions(app, tmp_path):
         assert (again.cmap_var.get(), again.dpi_var.get(), again.type_var.get()) == ("plasma", "150", "PDF")
     finally:
         again.destroy()
+
+
+def pump(app, seconds=2.0, until=None):
+    t0 = time.time()
+    while time.time() - t0 < seconds:
+        app.update()
+        if until and until():
+            return True
+        time.sleep(0.02)
+    return until() if until else None
+
+
+def test_live_map_preview_follows_settings_and_reports_problems(app):
+    app.open_file()
+    app.ptabs.select("map")
+    assert pump(app, 10, lambda: app.mapview.canvas is not None)
+    assert "63 valid points" in app.mapview.info.get()
+    fig = app.mapview.canvas.figure
+    assert fig.axes[0].get_xlabel() == "X (m)"
+    app.label_vars["xlabel"].set("Easting")                    # a setting changes -> redraw
+    assert pump(app, 10, lambda: app.mapview.canvas is not None and app.mapview.canvas.figure is not fig
+                and app.mapview.canvas.figure.axes[0].get_xlabel() == "Easting")
+    app.res_var.set("abc")                                      # bad value -> message, no crash
+    assert pump(app, 5, lambda: "Grid resolution" in app.mapview.msg.cget("text"))
+    app.res_var.set("100")
+    app.preview_var.set("Collinear")
+    app._on_preview_sheet()
+    assert pump(app, 10, lambda: "triangulated" in app.mapview.msg.cget("text"))
+
+
+def test_map_preview_zoom_pan_buttons_toggle(app):
+    app.open_file()
+    app.ptabs.select("map")
+    assert pump(app, 10, lambda: app.mapview.canvas is not None)
+    app.mapview._tool("zoom")
+    assert app.mapview.btn["zoom"]._active and not app.mapview.btn["pan"]._active
+    app.mapview._tool("pan")
+    assert app.mapview.btn["pan"]._active and not app.mapview.btn["zoom"]._active
+
+
+def test_help_menu_about_and_viewers_open(app):
+    from contourmap import dialogs
+    labels = [app.help_menu.entrycget(i, "label") for i in range(app.help_menu.index("end") + 1)
+              if app.help_menu.type(i) == "command"]
+    assert labels[0].startswith("How to use") and "Check for updates" in labels and labels[-1].startswith("About")
+    about = dialogs.AboutDialog(app, lambda: None, lambda: None, lambda: None)
+    app.update()
+    about._copy_info()
+    assert "Contour Map Generator 1.0.0" in app.clipboard_get()
+    about.destroy()
+    for show in (app._show_how_to, app._show_terms, app._show_licences):
+        before = len(app.winfo_children())
+        show()
+        app.update()
+        assert len(app.winfo_children()) == before + 1
+        app.winfo_children()[-1].destroy()
+
+
+def test_update_check_reports_results_without_freezing(app, monkeypatch):
+    from tkinter import messagebox
+    from contourmap import updates
+    seen = []
+    monkeypatch.setattr(updates, "check", lambda: updates.UpdateResult("current", "1.0.0", "1.0.0"))
+    monkeypatch.setattr(messagebox, "showinfo", lambda t, m, **k: seen.append(m))
+    app.check_for_updates()
+    assert pump(app, 5, lambda: seen)
+    assert "latest version" in seen[0]
+    monkeypatch.setattr(updates, "check", lambda: (_ for _ in ()).throw(updates.UpdateError("offline")))
+    monkeypatch.setattr(messagebox, "askyesno", lambda t, m, **k: seen.append(m) or False)
+    app.check_for_updates()
+    assert pump(app, 5, lambda: len(seen) == 2)
+    assert "offline" in seen[1]

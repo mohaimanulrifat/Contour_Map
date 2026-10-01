@@ -32,6 +32,7 @@ class SettingsStore:
 
     def __init__(self, path: str = None):
         self._explicit = path
+        self.path_used = None                    # file last read or written
         self.data: Dict[str, Any] = {}
         self.load()
 
@@ -43,6 +44,7 @@ class SettingsStore:
                     loaded = json.load(fh)
                 if isinstance(loaded, dict):
                     self.data = loaded
+                    self.path_used = p
                     return
             except (OSError, ValueError):
                 continue
@@ -56,6 +58,7 @@ class SettingsStore:
                 with open(tmp, "w", encoding="utf-8") as fh:
                     json.dump(self.data, fh, indent=2, ensure_ascii=False)
                 os.replace(tmp, p)
+                self.path_used = p
                 return True
             except OSError:
                 continue

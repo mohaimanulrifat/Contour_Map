@@ -1,0 +1,75 @@
+Contour Map Generator turns X / Y / Z data into contour maps. It reads Excel, CSV and text
+files and saves one image per sheet.
+
+How to make maps
+
+1. Click "Open file..." and choose an Excel (.xlsx, .xls), CSV or text (.csv, .txt) file.
+   The preview table shows the first 20 rows of the sheet chosen in "Sheet".
+2. Go through the tabs on the left. The defaults work for most data, so you can often skip
+   straight to step 3.
+3. Click "Generate maps". Each sheet becomes one image, named after the sheet.
+
+The "MAP PREVIEW" tab above the table draws the map for the sheet you are looking at, and
+updates as you change settings. Use Pan, Zoom and Reset view to look closer. The preview is
+only for looking: nothing is saved until you click "Generate maps".
+
+01 DATA
+
+Layout
+  Column format: every row is one point. Pick which columns hold X, Y and Z.
+  Grid / matrix format: the first row holds the X values, the first column holds the Y
+  values, and the cells hold Z. The top-left corner cell is ignored.
+
+Use first row as column titles
+  Tick it when row 1 names the columns. Untick it and the columns are called
+  Column 1, Column 2, and so on.
+
+Skip rows at top / Ignore rows at bottom
+  For title lines above the table, or totals below it.
+
+Columns
+  X, Y and Z are chosen automatically (columns named x, y and z, otherwise the first three
+  columns that hold numbers). Change them in the dropdowns. The line underneath tells you how
+  many valid points were found, and how many empty or non-numeric rows will be left out.
+
+Sheets to process
+  "Process all sheets", or tick the ones you want. If you changed the columns and another
+  sheet does not have columns with those names, the same column positions are used.
+
+02 PLOT
+
+  Interpolation: Linear, Cubic (smooth) or Nearest. If cubic is not possible for a sheet, the
+  app uses linear and says so in the results.
+  Grid resolution: how many points the map is calculated on, along each side.
+  Mask outside the data hull: leave blank the area outside your measured points.
+  Contours: filled colours, lines, or both. Use a number of levels, or your own
+  minimum, maximum and step.
+  Colours: pick a colormap, and tick Reverse to flip it.
+  Show: contour labels, data points, grid lines, colorbar, equal aspect ratio, inverted axes.
+  Axis limits: type both a minimum and a maximum, or leave both empty for automatic.
+  Font size and figure size (in inches).
+
+03 LABELS
+
+  Plot title, X axis name, Y axis name and colorbar label. They start with your column titles.
+  Change a box and your text is used for every sheet. Boxes you leave alone follow each sheet's
+  own column titles. "Reset to column titles" undoes your edits.
+
+04 OUTPUT
+
+  Folder: where the images are saved. The app remembers it.
+  Image: PNG, JPG, PDF, SVG or TIFF. DPI 72, 150, 300 or 600. A transparent background is
+  possible for every type except JPG.
+  File names: each image is named after its sheet. You can put the data file's name in front,
+  add a prefix or a suffix, or give a custom name when only one sheet is chosen. Characters that
+  Windows does not allow in a file name are replaced.
+  If the file exists: ask me, add a number (name (1).png), or overwrite.
+
+While it works
+
+  The progress bar says "Sheet 2 of 5: name". Cancel stops after the sheet being drawn.
+  The Results box lists every file saved, and every sheet that was skipped or failed, with the
+  reason. One sheet that fails never stops the others.
+
+Your settings are remembered between runs, in a small file next to the app. Help, Open settings
+folder shows where.

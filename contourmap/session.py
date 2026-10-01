@@ -268,6 +268,13 @@ def validate(session: DataSession, opts: UserOptions) -> Optional[str]:
     return plot_problem(opts) or folder_problem(opts.output_dir)
 
 
+def preview_problem(opts: UserOptions) -> Optional[str]:
+    """Why the live preview can't be drawn with these options (None if it can)."""
+    if opts.layout == "columns" and opts.columns and len(set(opts.columns)) < 3:
+        return "X, Y and Z must be three different columns."
+    return plot_problem(opts)
+
+
 def make_run_config(session: DataSession, opts: UserOptions) -> RunConfig:
     fs = opts.font_size
     plot = PlotSettings(

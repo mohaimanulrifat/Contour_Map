@@ -10,15 +10,16 @@ from typing import Dict, List, Optional
 
 import matplotlib
 
-from . import branding, theme
+from . import branding, dialogs, docs, theme, updates, version
 from .data_loader import SUPPORTED_EXTS, DataLoadError
 from .defaults import COLORMAPS, DEFAULT_OUTPUT, DEFAULT_PLOT
 from .engine import FILE_TYPES
-from .runner import SheetResult
+from .mapview import MapView
+from .runner import SheetResult, build_sheet_figure
 from .session import (DPI_CHOICES, DataSession, OptionError, UserOptions, clean_saved,
-                      make_run_config, parse_float, parse_int, to_saved, validate)
+                      make_run_config, parse_float, parse_int, preview_problem, to_saved, validate)
 from .settings import SettingsStore
-from .theme import C, Card, PillButton, ProgressBar, ScrollFrame, TabBar, font, kicker, mono, px
+from .theme import C, Card, PillButton, ProgressBar, ScrollFrame, TabBar, font, kicker, mono, px, rounded_image
 from .worker import BatchWorker
 
 EXISTS_LABELS = {"ask": "Ask me", "number": "Add a number: name (1)", "overwrite": "Overwrite"}
@@ -36,8 +37,8 @@ class App(tk.Tk):
         super().__init__()
         self.title(branding.APP_NAME)
         theme.setup(self)
-        self.geometry(f"{px(1240)}x{px(800)}")
-        self.minsize(px(1000), px(660))
+        self.geometry(f"{px(1260)}x{px(860)}")
+        self.minsize(px(1040), px(700))
         self._set_icon()
 
         self.store = settings or SettingsStore()
@@ -50,6 +51,10 @@ class App(tk.Tk):
         self._cols_edited = False                          # X/Y/Z dropdowns changed by the user?
         self._filling = False                              # programmatic fill in progress
         self._logo = None
+        self._icon = None
+        self._preview_job = None                           # pending debounced map render
+        self._preview_tab = "data"
+        self._update_q = None
         self._positions = None                             # column indices of the user's X/Y/Z picks
 
         self._make_vars()
@@ -58,14 +63,23 @@ class App(tk.Tk):
         self._build_body()
         self._apply_saved(self.store.values())
         self._sync_states()
+        self._wire_preview()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _set_icon(self):
         try:
             if os.name == "nt":
-                self.iconbitmap(branding.resource_path(branding.ICON_FILE))
+                self.iconbitmap(branding.resource_path("assets", branding.ICON_FILE))
         except tk.TclError:
             pass
+        logo = branding.logo_path()
+        if logo:                                           # window icon on other platforms too
+            self._icon = rounded_image(logo, 64, master=self)
+            if self._icon:
+                try:
+                    self.iconphoto(True, self._icon)
+                except tk.TclError:
+                    pass
 
     # ================================================================== variables
     def _make_vars(self):
@@ -116,24 +130,21 @@ class App(tk.Tk):
         bar.pack(fill="x", padx=px(24), pady=(px(18), px(10)))
         logo = branding.logo_path()
         if logo:
-            try:
-                from PIL import Image, ImageTk
-                img = Image.open(logo)
-                h = px(40)
-                img = img.resize((max(1, int(img.width * h / img.height)), h), Image.LANCZOS)
-                self._logo = ImageTk.PhotoImage(img, master=self)
+            self._logo = rounded_image(logo, px(48), master=self)
+            if self._logo:
                 tk.Label(bar, image=self._logo, bg=C.bg).pack(side="left", padx=(0, px(14)))
-            except Exception:
-                self._logo = None
         names = tk.Frame(bar, bg=C.bg)
         names.pack(side="left")
         tk.Label(names, text=branding.APP_NAME, bg=C.bg, fg=C.text, font=font(16, True)).pack(anchor="w")
         if branding.APP_TAGLINE:
             tk.Label(names, text=branding.APP_TAGLINE, bg=C.bg, fg=C.muted, font=font(10)).pack(anchor="w")
+        self.help_btn = PillButton(bar, "Help  ▾", self._open_help_menu, style="secondary", bg=C.bg, padx=18)
+        self.help_btn.pack(side="right", padx=(px(10), 0))
         self.open_btn = PillButton(bar, "Open file…", self.open_file, style="primary", bg=C.bg)
         self.open_btn.pack(side="right")
         tk.Label(bar, textvariable=self.file_var, bg=C.bg, fg=C.accent_pale, font=font(10),
                  anchor="e").pack(side="right", padx=px(16))
+        self._build_help_menu()
 
     def _build_footer(self):
         foot = tk.Frame(self, bg=C.bg)
@@ -151,6 +162,11 @@ class App(tk.Tk):
                  anchor="w").pack(side="left", padx=px(14))
         self.progress = ProgressBar(foot)
         self.progress.pack(fill="x", pady=(px(12), 0))
+        credits = tk.Frame(foot, bg=C.bg)
+        credits.pack(fill="x", pady=(px(10), 0))
+        tk.Label(credits, text=f"{branding.title_with_version()}   By {branding.AUTHOR_SHORT}  ·  ",
+                 bg=C.bg, fg=C.dim, font=font(9)).pack(side="left")
+        dialogs.Link(credits, "About", self._show_about, bg=C.bg, size=9).pack(side="left")
 
     # ================================================================== body
     def _build_body(self):
@@ -178,7 +194,7 @@ class App(tk.Tk):
 
         right = tk.Frame(body, bg=C.bg)
         right.grid(row=0, column=1, rowspan=2, sticky="nsew")
-        right.rowconfigure(0, weight=3)
+        right.rowconfigure(0, weight=5)
         right.rowconfigure(1, weight=2)
         right.columnconfigure(0, weight=1)
         self._build_preview(right)
@@ -374,13 +390,18 @@ class App(tk.Tk):
         card.grid(row=0, column=0, sticky="nsew", pady=(0, px(12)))
         top = tk.Frame(card.body, bg=C.card)
         top.pack(fill="x", pady=(0, px(8)))
-        kicker(top, "", "Data preview").pack(side="left")
+        self.ptabs = TabBar(top, self._show_preview_tab, bg=C.card)
+        self.ptabs.add("data", "", "Data preview")
+        self.ptabs.add("map", "", "Map preview")
+        self.ptabs.pack(side="left")
         self.preview_box = ttk.Combobox(top, textvariable=self.preview_var, state="readonly", width=26)
         self.preview_box.pack(side="right")
         self.preview_box.bind("<<ComboboxSelected>>", lambda e: self._on_preview_sheet())
         ttk.Label(top, text="Sheet", style="Field.TLabel").pack(side="right", padx=(0, px(8)))
-        ttk.Label(card.body, textvariable=self.preview_info, style="Hint.TLabel").pack(anchor="w", pady=(0, px(6)))
-        grid = tk.Frame(card.body, bg=C.card)
+
+        self.data_frame = tk.Frame(card.body, bg=C.card)
+        ttk.Label(self.data_frame, textvariable=self.preview_info, style="Hint.TLabel").pack(anchor="w", pady=(0, px(6)))
+        grid = tk.Frame(self.data_frame, bg=C.card)
         grid.pack(fill="both", expand=True)
         self.tree = ttk.Treeview(grid, show="headings", height=6)
         vs = ttk.Scrollbar(grid, orient="vertical", command=self.tree.yview)
@@ -392,6 +413,67 @@ class App(tk.Tk):
         hs.grid(row=1, column=0, sticky="ew")
         grid.rowconfigure(0, weight=1)
         grid.columnconfigure(0, weight=1)
+
+        self.mapview = MapView(card.body)
+        self.mapview.show_message("Open a file to see a map preview.")
+        self.ptabs.select("data")
+
+    # ---- live map preview
+    def _show_preview_tab(self, key):
+        self._preview_tab = key
+        self.data_frame.pack_forget()
+        self.mapview.pack_forget()
+        if key == "map":
+            self.mapview.pack(fill="both", expand=True)
+            self._schedule_preview(now=True)
+        else:
+            self.data_frame.pack(fill="both", expand=True)
+
+    def _wire_preview(self):
+        """Redraw the map (debounced) whenever anything that affects it changes."""
+        vars_ = [self.layout_var, self.header_var, self.skip_top_var, self.skip_bottom_var, *self.col_vars,
+                 self.interp_var, self.res_var, self.fill_var, self.levmode_var, self.levels_var,
+                 self.lmin_var, self.lmax_var, self.lstep_var, self.cmap_var, self.rev_var,
+                 *self.flags.values(), *self.lim_vars.values(), self.font_var, self.figw_var,
+                 self.figh_var, *self.label_vars.values()]
+        for v in vars_:
+            v.trace_add("write", lambda *a: self._schedule_preview())
+
+    def _schedule_preview(self, now: bool = False):
+        if self._preview_tab != "map":
+            return
+        if self._preview_job is not None:
+            self.after_cancel(self._preview_job)
+        self._preview_job = self.after(0 if now else 450, self._render_preview)
+
+    def _render_preview(self):
+        self._preview_job = None
+        if self._preview_tab != "map":
+            return
+        if not self.session.is_open:
+            self.mapview.show_message("Open a file to see a map preview.")
+            return
+        sheet = self.preview_var.get()
+        try:
+            self._read_reading()
+            opts = self._collect_options()
+            problem = preview_problem(opts)
+            if problem:
+                raise OptionError(problem)
+            cfg = make_run_config(self.session, opts)
+            df = self.session.frame(sheet)
+        except OptionError as e:
+            self.mapview.show_message(str(e), "error")
+            return
+        except DataLoadError as e:
+            self.mapview.show_message(str(e), "error")
+            return
+
+        def build():
+            result, data, _cols, note = build_sheet_figure(df, cfg)
+            info = [data.summary()] + ([note] if note else []) + result.grid.notes
+            return result.figure, "  ·  ".join(info)
+        self.mapview.request(build)
 
     def _build_log(self, parent):
         card = Card(parent, autoheight=False, padx=14, pady=12)
@@ -527,6 +609,7 @@ class App(tk.Tk):
         self.preview_info.set(f"first {len(rows)} of {total} rows · {len(cols)} columns")
         self._update_columns(sheet)
         self._prefill_labels()
+        self._schedule_preview()
 
     # ================================================================== columns
     def _update_columns(self, sheet):
@@ -835,10 +918,102 @@ class App(tk.Tk):
         self.log.see("end")
         self.log.config(state="disabled")
 
+    # ================================================================== help menu
+    def _build_help_menu(self):
+        m = tk.Menu(self, tearoff=0, bg=C.card, fg=C.text, activebackground=C.indigo,
+                    activeforeground="#ffffff", relief="flat", bd=1, font=font(10))
+        m.add_command(label=f"How to use {branding.APP_NAME}", command=self._show_how_to)
+        m.add_separator()
+        m.add_command(label="Send a suggestion", command=lambda: dialogs.open_url(branding.SUGGESTION_URL))
+        m.add_command(label="Report a problem", command=lambda: dialogs.open_url(branding.PROBLEM_URL))
+        m.add_command(label="Check for updates", command=self.check_for_updates)
+        m.add_separator()
+        m.add_command(label="Open settings folder", command=self._open_settings_folder)
+        m.add_command(label="Third-party licences", command=self._show_licences)
+        m.add_command(label="Terms of use", command=self._show_terms)
+        m.add_separator()
+        m.add_command(label=f"About {branding.APP_NAME}", command=self._show_about)
+        self.help_menu = m
+
+    def _open_help_menu(self):
+        b = self.help_btn
+        x, y = b.winfo_rootx(), b.winfo_rooty() + b.winfo_height() + 4
+        try:
+            self.help_menu.tk_popup(x, y)
+        finally:
+            self.help_menu.grab_release()
+
+    def _show_how_to(self):
+        dialogs.TextViewer(self, f"How to use {branding.APP_NAME}", docs.how_to_use())
+
+    def _show_terms(self):
+        dialogs.TextViewer(self, "Terms of use", docs.terms())
+
+    def _show_licences(self):
+        dialogs.TextViewer(self, "Third-party licences", docs.third_party(), width=860, height=640)
+
+    def _show_about(self):
+        dialogs.AboutDialog(self, self.check_for_updates, self._show_licences, self._show_terms)
+
+    def _open_settings_folder(self):
+        self._save_settings()                              # makes sure the file exists
+        if self.store.path_used:
+            dialogs.open_folder(os.path.dirname(self.store.path_used))
+        else:
+            messagebox.showinfo("Settings folder", "Settings could not be saved on this PC.")
+
+    def check_for_updates(self):
+        """Ask GitHub for the latest release on a background thread (only when the user asks)."""
+        import queue
+        import threading
+        if self._update_q is not None:
+            return
+        self._update_q = queue.Queue()
+        self.status_var.set("Checking for updates…")
+
+        def work(q=self._update_q):
+            try:
+                q.put(("ok", updates.check()))
+            except updates.UpdateError as e:
+                q.put(("err", str(e)))
+            except Exception as e:
+                q.put(("err", f"Unexpected problem: {e}"))
+        threading.Thread(target=work, daemon=True).start()
+        self.after(150, self._poll_update)
+
+    def _poll_update(self):
+        q = self._update_q
+        if q is None:
+            return
+        try:
+            kind, payload = q.get_nowait()
+        except Exception:
+            self.after(150, self._poll_update)
+            return
+        self._update_q = None
+        self.status_var.set("Ready.")
+        if kind == "err":
+            if messagebox.askyesno("Check for updates", f"{payload}\n\nOpen the download page instead?"):
+                dialogs.open_url(branding.RELEASES_URL)
+            return
+        r = payload
+        if r.status == "newer":
+            if messagebox.askyesno("Update available",
+                                   f"Version {r.latest} is available. You have {r.current}.\n\n"
+                                   "Open the download page?"):
+                dialogs.open_url(r.url)
+        elif r.status == "ahead":
+            messagebox.showinfo("Check for updates", f"You have version {r.current}, which is newer than "
+                                                     f"the latest public release ({r.latest}).")
+        else:
+            messagebox.showinfo("Check for updates", f"You have the latest version ({r.current}).")
+
     def _on_close(self):
         try:
             self._save_settings()
         finally:
+            if self._preview_job is not None:
+                self.after_cancel(self._preview_job)
             if self.worker:
                 self.worker.cancel()
             self.destroy()
