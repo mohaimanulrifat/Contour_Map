@@ -4,3 +4,8 @@ venv/
 .venv/
 build/
 dist/
+.pytest_cache/
+.idea/
+.vscode/
+*.egg-info/
+contour_settings.json
