@@ -1,16 +1,45 @@
 # Contour Map Generator
 
 A Windows desktop tool (Python / tkinter) that turns X/Y/Z data in Excel or CSV files into
-contour maps. It has a **mode selector**:
+contour maps. A **Mode** dropdown at the top decides how much the user has to set up:
 
-| Mode | Purpose |
+| Mode | What the window shows |
 |---|---|
-| **Half Cell Potential** (default) | The original workflow (ASTM C876-15 survey). Locked layout and plot style. |
-| **Universal (custom data)** | Any X/Y/Z data with user-chosen columns and plot style. *(arrives in Stage 3)* |
+| **Half Cell Potential** (default) | A locked *format*: open a file, press Generate. Everything is automatic (all sheets, X/Y/Z found by header name, ASTM C876-15 style, PNG at 300 DPI next to the data file). A read-only data preview is shown; there are no settings. |
+| **Universal (custom data)** | Settings tabs: **Data** (first row as titles, which sheets), **Labels** (title, axis names, colorbar label), **Output** (folder, file type, DPI, transparency, file naming, overwrite behaviour). Column pickers and plot options arrive in Stage 3. |
 
-> **Status: Stage 1 of 4.** Mode selector, refactor into modules, and a regression test that proves
-> Half Cell Potential output is unchanged. Preview table, naming options, Universal controls,
-> live preview and saved settings follow in Stages 2–4.
+Both modes share the same engine, the data preview, the progress bar with Cancel, and the
+results log (which file was saved, which sheet was skipped or failed and why).
+
+> **Status: Stage 2 of 4.** Stage 1 = mode selector + refactor + regression test.
+> Stage 2 = preview table, header toggle, labels, multi-sheet, output/naming options.
+> Next: Stage 3 (column dropdowns and plot settings for Universal), Stage 4 (live map preview,
+> remaining settings persistence, more tests).
+
+## Using it
+
+1. Choose a **Mode**, click **Open file…** (`.xlsx`, `.xls`, `.csv`, `.txt`).
+2. The **Data preview** shows the first 20 rows of the sheet picked in the *Sheet* box.
+3. *Universal only:* untick **Use first row as column titles** if the file has no header (columns
+   are then called `Column 1`, `Column 2`…; the preview updates immediately). Tick the sheets to
+   process (or **Process all sheets**). Edit **Labels**; boxes you don't touch follow each
+   sheet's own column titles. Set the **Output** options.
+4. Click **Generate maps**. One image per sheet; progress shows `Sheet 2 of 5: name…`.
+   **Cancel** stops after the sheet being drawn. A sheet that fails is logged and the rest continue.
+
+**File names (Universal).** Default: `<sheet name>.<type>`. Options: include the data file name
+(`<file>_<sheet>`), prefix, suffix, and a custom name (only offered when exactly one sheet is
+processed). Characters Windows doesn't allow (`< > : " / \ | ? *`), reserved names such as `CON`,
+and trailing dots/spaces are replaced or removed. If a file already exists you can choose **Ask**
+(overwrite / new number / skip), **Add a number** (`name (1).png`) or **Overwrite**. Two sheets that
+would end up with the same name in one run are always numbered, never overwritten.
+**File types:** PNG, JPG, PDF, SVG, TIFF · **DPI:** 72/150/300/600 · optional transparent background
+(not for JPG).
+
+**Remembered settings.** The last mode, last opened folder and, per mode, the output folder, file
+type, DPI, transparency, naming options and header choice are stored in `contour_settings.json`
+next to the app (or in `%APPDATA%\ContourMapApp` if that folder isn't writable). Delete the file
+to reset. It is ignored by git.
 
 ## Install and run
 
@@ -51,13 +80,15 @@ contourmap/
   presets.py              ModePreset + PlotSettings dataclasses, one preset per mode
   data_loader.py          reading Excel/CSV, x/y/z column detection, numeric cleaning
   engine.py               interpolation + plotting (matplotlib Figure API, no pyplot)
-  naming.py               output file names
+  naming.py               file-name building, sanitising, overwrite/numbering
+  session.py              opened file (cached sheets, preview), user options -> run config
+  settings.py             last-used settings JSON
   runner.py               one-sheet pipeline and the batch loop (per-sheet error isolation)
   worker.py               background thread + queue + cancel (no tkinter)
   gui.py                  tkinter front end, presentation only
 sample_data/              half_cell_sample.xlsx (multi-sheet demo/test data)
 tools/make_sample_data.py regenerates the sample workbook
-tests/                    regression test + the baseline captured from the original app
+tests/                    regression test (+ baseline from the original app), naming, session/settings
 ```
 
 ## Half Cell Potential mode: exactly what the original app did
@@ -103,7 +134,8 @@ blank corners. If linear also fails (e.g. all points on one line) the sheet is r
 **Output.** PNG, **300 DPI**, `bbox_inches='tight'`. Saved **in the same folder as the input file**
 as `<workbook name>_<sheet name>.png`, where every character of the sheet name that is not a
 letter, digit, space, `_` or `-` becomes `_` (sheet `Wall (B)` → `half_cell_sample_Wall _B_.png`).
-Existing files are overwritten silently.
+Existing files are overwritten silently (Half Cell Potential keeps this behaviour; if two sheets
+sanitise to the same name, the later one now gets ` (1)` instead of silently replacing the first).
 
 **What changed in the refactor (on purpose).**
 - Each sheet is loaded and processed independently, so one bad sheet can't stop the rest.
@@ -127,5 +159,12 @@ PNG pixels (exact when matplotlib's version matches the baseline's, otherwise a 
 
 A mode is a `ModePreset` in `contourmap/presets.py`: default `PlotSettings` (colormap, levels,
 labels, figure size…), `OutputSettings`, `column_mode` (`"auto_hcp"` rule or `"user"` picks),
-the default file-name pattern, and which GUI sections to show. Add it to the `MODES` dict and it
-appears in the dropdown; the engine and GUI need no changes.
+`naming` (file-name pattern and overwrite behaviour) and `customizable`:
+
+- `customizable=False` → a locked format like Half Cell Potential (no settings tabs; output goes next to the data file).
+- `customizable=True` → the Universal-style settings tabs.
+
+Add it to the `MODES` dict and it appears in the dropdown; the engine and GUI need no changes.
+To ship a build with only some modes (e.g. a company build with only Half Cell Potential, or a
+public build with only Universal), keep just those entries in `MODES`; with one entry the
+dropdown simply lists that mode.

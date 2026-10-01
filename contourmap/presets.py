@@ -7,6 +7,8 @@ ModePreset and add it to MODES -- the GUI and engine need no changes.
 from dataclasses import dataclass, field, replace
 from typing import Optional, Tuple
 
+from .naming import NamingOptions
+
 
 @dataclass(frozen=True)
 class PlotSettings:
@@ -62,19 +64,17 @@ class ModePreset:
     plot: PlotSettings
     output: OutputSettings = OutputSettings()
     # How x/y/z columns are chosen:
-    #   "auto_hcp" -> legacy rule: columns named x/y/z, else the first three columns (locked)
-    #   "user"     -> the user picks them in the GUI
+    #   "auto_hcp" -> legacy rule: columns named x/y/z, else the first three columns
+    #   "user"     -> guessed, and the user can change them in the GUI
     column_mode: str = "user"
-    # Default for 'Use first row as column titles'
-    header_row: bool = True
-    # GUI switches
-    show_column_pickers: bool = True
-    show_plot_settings: bool = True
-    # Behaviour of output naming: pattern with {file} and {sheet}
-    default_name_pattern: str = "{sheet}"
-    # Where images go by default: "input_folder" (legacy) or "remembered"
-    default_output: str = "remembered"
-    available: bool = True                # False = listed in the dropdown but not selectable yet
+    # True  -> the GUI offers data options, axis names, sheet selection, output settings, ...
+    # False -> a locked "format": pick a file and press Generate; everything else is automatic
+    #          (all sheets, first row = titles, output next to the data file, fixed style).
+    customizable: bool = True
+    header_row: bool = True               # 'first row holds column titles' (locked if not customizable)
+    naming: NamingOptions = NamingOptions()
+    output_dir_mode: str = "remembered"   # "input_folder" (next to the data file) | "remembered"
+    available: bool = True                # False = listed in the dropdown but not selectable
 
 
 HALF_CELL = ModePreset(
@@ -87,10 +87,10 @@ HALF_CELL = ModePreset(
     ),
     output=OutputSettings(file_type="png", dpi=300, bbox_tight=True),
     column_mode="auto_hcp",
-    show_column_pickers=False,
-    show_plot_settings=False,
-    default_name_pattern="{file}_{sheet}",
-    default_output="input_folder",
+    customizable=False,
+    # original naming: <file>_<sheet>.png next to the data file, existing files overwritten
+    naming=NamingOptions(pattern="{file}_{sheet}", legacy=True, on_exists="overwrite"),
+    output_dir_mode="input_folder",
 )
 
 UNIVERSAL = ModePreset(
@@ -109,7 +109,7 @@ UNIVERSAL = ModePreset(
     ),
     output=OutputSettings(file_type="png", dpi=300, bbox_tight=True),
     column_mode="user",
-    available=False,        # enabled in Stage 3
+    naming=NamingOptions(pattern="{sheet}", on_exists="ask"),
 )
 
 MODES = {m.name: m for m in (HALF_CELL, UNIVERSAL)}

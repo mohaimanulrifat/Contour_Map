@@ -5,17 +5,17 @@ only put messages on a queue. One failing sheet never stops the others.
 """
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, List, Optional, Tuple
 
 import pandas as pd
 
 from . import naming
+from .naming import NamingOptions
 from .data_loader import (DataLoadError, LoadOptions, SheetSkipped, XYZData, extract_xyz,
-                          find_xyz_columns, load_sheet)
+                          find_xyz_columns, guess_xyz, load_sheet)
 from .engine import PlotError, RenderResult, render_figure, save_figure
 from .presets import ModePreset, OutputSettings, PlotSettings
-from dataclasses import replace
 
 
 @dataclass
@@ -27,9 +27,12 @@ class RunConfig:
     load: LoadOptions = LoadOptions()
     plot: Optional[PlotSettings] = None    # None -> preset.plot
     output: Optional[OutputSettings] = None
-    columns: Optional[Tuple[str, str, str]] = None   # user-picked (x, y, z); None -> preset rule
+    columns: Optional[Tuple[str, str, str]] = None   # user-picked (x, y, z); None -> guess per sheet
+    naming: Optional[NamingOptions] = None    # None -> preset.naming
 
     def __post_init__(self):
+        if self.naming is None:
+            self.naming = self.preset.naming
         if self.plot is None:
             self.plot = self.preset.plot
         if self.output is None:
@@ -54,8 +57,13 @@ def pick_columns(df: pd.DataFrame, cfg: RunConfig) -> Tuple[str, str, str]:
         if x_col is None or y_col is None or z_col is None:
             raise SheetSkipped("couldn't determine x,y,z")
         return x_col, y_col, z_col
+    if df.empty:
+        raise SheetSkipped("sheet is empty")
     if not cfg.columns:
-        raise SheetSkipped("no X/Y/Z columns selected")
+        guess = guess_xyz(df)
+        if None in guess:
+            raise SheetSkipped("needs at least 3 columns to use as X, Y and Z")
+        return guess
     missing = [c for c in cfg.columns if c not in df.columns]
     if missing:
         raise SheetSkipped(f"column(s) not found: {', '.join(map(str, missing))}")
@@ -79,17 +87,19 @@ def build_sheet_figure(df: pd.DataFrame, cfg: RunConfig) -> Tuple[RenderResult, 
     return result, data, (x_col, y_col, z_col)
 
 
-def output_path(cfg: RunConfig, sheet: str) -> str:
-    base = os.path.splitext(os.path.basename(cfg.path))[0]
-    return os.path.join(cfg.output_dir, naming.legacy_filename(base, sheet, cfg.output.file_type))
-
-
-def process_sheet(cfg: RunConfig, sheet: str) -> SheetResult:
+def process_sheet(cfg: RunConfig, sheet: str, used: Optional[set] = None,
+                  ask: Callable[[str], str] = lambda path: "number") -> SheetResult:
+    used = set() if used is None else used
     try:
         df = load_sheet(cfg.path, sheet, cfg.load)
         result, data, _ = build_sheet_figure(df, cfg)
-        path = output_path(cfg, sheet)
+        base = os.path.splitext(os.path.basename(cfg.path))[0]
+        name = naming.build_basename(cfg.naming, base, sheet, single_sheet=len(cfg.sheets) == 1)
+        path = naming.resolve_path(cfg.output_dir, name, cfg.output.file_type, cfg.naming, used, ask)
+        if path is None:
+            return SheetResult(sheet, "skipped", "file already exists (skipped)")
         save_figure(result.figure, path, cfg.output)
+        used.add(path)
         info = data.summary()
         if result.grid.notes:
             info += "; " + "; ".join(result.grid.notes)
@@ -105,16 +115,22 @@ def process_sheet(cfg: RunConfig, sheet: str) -> SheetResult:
 def run_batch(cfg: RunConfig,
               on_progress: Callable[[int, int, str], None] = lambda i, n, sheet: None,
               on_result: Callable[[SheetResult], None] = lambda r: None,
-              cancel: Optional[threading.Event] = None) -> List[SheetResult]:
-    """Process every sheet in cfg.sheets. Returns the results actually produced."""
+              cancel: Optional[threading.Event] = None,
+              ask_overwrite: Callable[[str], str] = lambda path: "number") -> List[SheetResult]:
+    """Process every sheet in cfg.sheets. Returns the results actually produced.
+
+    ask_overwrite(path) is called when naming.on_exists == "ask" and a file exists; it returns
+    "overwrite", "number" or "skip".
+    """
     cancel = cancel or threading.Event()
     results: List[SheetResult] = []
+    used: set = set()
     total = len(cfg.sheets)
     for i, sheet in enumerate(cfg.sheets, start=1):
         if cancel.is_set():
             break
         on_progress(i, total, sheet)
-        res = process_sheet(cfg, sheet)
+        res = process_sheet(cfg, sheet, used, ask_overwrite)
         results.append(res)
         on_result(res)
     return results
