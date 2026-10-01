@@ -2,6 +2,7 @@
 import csv
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -57,25 +58,53 @@ def detect_encoding(path: str) -> str:
             return "cp1252"
 
 
-def detect_delimiter(path: str, encoding: str) -> str:
+_CANDIDATES = (",", ";", "\t", "|")
+_WHITESPACE = r"\s+"
+
+
+def _field_counts(lines: List[str], delim: str) -> List[int]:
+    if delim == _WHITESPACE:
+        return [len(ln.split()) for ln in lines]
+    counts = []
+    for ln in lines:
+        try:
+            counts.append(len(next(csv.reader([ln], delimiter=delim))))
+        except (csv.Error, StopIteration):
+            counts.append(1)
+    return counts
+
+
+def _score(counts: List[int]) -> Tuple[int, int]:
+    """(how many lines agree on the most common field count, that count); 0 if it is 1 column."""
+    if not counts:
+        return (0, 0)
+    modal, agree = Counter(counts).most_common(1)[0]
+    return (agree, modal) if modal > 1 else (0, 0)
+
+
+def _sample_lines(path: str, encoding: str, skip_top: int) -> List[str]:
     with open(path, "r", encoding=encoding, errors="replace", newline="") as fh:
         sample = fh.read(64 * 1024)
-    lines = [ln for ln in sample.splitlines() if ln.strip()][:50]
-    if not lines:
-        return ","
-    try:
-        return csv.Sniffer().sniff("\n".join(lines), delimiters=",;\t| ").delimiter
-    except csv.Error:
-        pass
-    # fall back: the candidate with the most consistent, non-zero count per line
-    best, best_score = ",", 0
-    for d in [",", ";", "\t", "|"]:
-        counts = [ln.count(d) for ln in lines]
-        if counts[0] and len(set(counts)) == 1 and counts[0] > best_score:
-            best, best_score = d, counts[0]
-    if best_score:
-        return best
-    return r"\s+" if re.search(r"\S\s+\S", lines[0]) else ","
+    return [ln for ln in sample.splitlines()[skip_top:] if ln.strip()][:50]
+
+
+def detect_delimiter(path: str, encoding: str, skip_top: int = 0) -> str:
+    """Delimiter of a text file: the one that splits most lines into the same number of fields.
+
+    Lines above the table (titles) don't matter as long as most lines agree, and the first
+    `skip_top` lines are ignored altogether.
+    """
+    lines = _sample_lines(path, encoding, skip_top)
+    best, best_score = ",", (0, 0)
+    for d in _CANDIDATES:
+        sc = _score(_field_counts(lines, d))
+        if sc > best_score:
+            best, best_score = d, sc
+    if best_score == (0, 0):
+        ws = _score(_field_counts(lines, _WHITESPACE))
+        if ws[0] >= max(2, len(lines) // 2):
+            return _WHITESPACE
+    return best
 
 
 def _finish(df: pd.DataFrame, opts: LoadOptions) -> pd.DataFrame:
@@ -89,20 +118,46 @@ def _finish(df: pd.DataFrame, opts: LoadOptions) -> pd.DataFrame:
     return df.reset_index(drop=True)
 
 
+def _to_numeric_if_possible(col: pd.Series) -> pd.Series:
+    try:
+        return pd.to_numeric(col)
+    except (ValueError, TypeError):
+        return col
+
+
+def _promote_header(df: pd.DataFrame) -> pd.DataFrame:
+    """Use the first row as column titles (for tables read without a header)."""
+    if df.empty:
+        return df
+    titles = [str(t).strip() if pd.notna(t) else f"Unnamed: {i}" for i, t in enumerate(df.iloc[0])]
+    body = df.iloc[1:].reset_index(drop=True)
+    body.columns = titles
+    return body.apply(_to_numeric_if_possible)
+
+
 def _read_text(path: str, opts: LoadOptions) -> pd.DataFrame:
     enc = opts.encoding or detect_encoding(path)
-    delim = opts.delimiter or detect_delimiter(path, enc)
-    kwargs = dict(encoding=enc, header=0 if opts.header else None, skiprows=opts.skip_top or None)
+    delim = opts.delimiter or detect_delimiter(path, enc, opts.skip_top)
+    kwargs = dict(encoding=enc, skiprows=opts.skip_top or None, sep=delim)
     if len(delim) > 1:
-        kwargs.update(sep=delim, engine="python")
-    else:
-        kwargs.update(sep=delim)
+        kwargs["engine"] = "python"
+    lines = _sample_lines(path, enc, opts.skip_top)
+    if delim == ";" and any(re.search(r"\d,\d", ln) for ln in lines[1:]):
+        kwargs["decimal"] = ","            # European style: 1,5 means 1.5
+    counts = _field_counts(lines, delim)
+    ragged = bool(counts) and counts[0] < max(counts)
     try:
-        return pd.read_csv(path, **kwargs)
+        if ragged:
+            # a title line shorter than the table: give pandas the full width so it can't choke
+            df = pd.read_csv(path, header=None, names=list(range(max(counts))), **kwargs)
+            return _promote_header(df) if opts.header else df
+        return pd.read_csv(path, header=0 if opts.header else None, **kwargs)
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
     except UnicodeDecodeError as e:
         raise DataLoadError(f"Could not decode the file with encoding '{enc}': {e}")
+    except pd.errors.ParserError as e:
+        raise DataLoadError(f"The text file could not be split into columns:\n{e}")
 
 
 def list_sheets(path: str) -> List[str]:
@@ -151,7 +206,7 @@ def find_xyz_columns(df):
     Returns (x_col_name, y_col_name, z_col_name, label_x, label_y, label_z)
     where label_* are the strings to use for axis/colorbar (header text).
 
-    Moved unchanged from the original app (Half Cell Potential detection rule).
+    Used to pre-select the column dropdowns.
     """
     cols = list(df.columns)
     lower = [str(c).strip().lower() for c in cols]
@@ -212,7 +267,7 @@ def numeric_columns(df: pd.DataFrame, min_fraction: float = 0.5) -> List[str]:
 
 
 def guess_xyz(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-    """Best-guess (x, y, z) for the user pickers: legacy name rule, else first 3 numeric columns."""
+    """Best-guess (x, y, z) for the dropdowns: columns named x/y/z, else the first 3 numeric columns."""
     x, y, z, *_ = find_xyz_columns(df)
     if x is not None:
         by_name = [c for c in (x, y, z) if c in numeric_columns(df)]
@@ -222,6 +277,28 @@ def guess_xyz(df: pd.DataFrame) -> Tuple[Optional[str], Optional[str], Optional[
     nums += [c for c in df.columns if c not in nums]
     nums = nums[:3] + [None] * (3 - len(nums[:3]))
     return nums[0], nums[1], nums[2]
+
+
+GRID_COLUMNS = ("X", "Y", "Z")
+
+
+def grid_to_xyz(df: pd.DataFrame) -> pd.DataFrame:
+    """Matrix layout -> long X/Y/Z table.
+
+    `df` must be read without a header row: the first row holds the X values (column headers),
+    the first column holds the Y values (row headers) and the remaining cells are Z. The corner
+    cell is ignored. Values are left as read; extract_xyz() validates them and counts the drops.
+    """
+    if df.shape[0] < 2 or df.shape[1] < 2:
+        raise SheetSkipped("grid layout needs a header row, a header column and at least one cell")
+    xs = df.iloc[0, 1:].to_numpy(dtype=object)
+    ys = df.iloc[1:, 0].to_numpy(dtype=object)
+    cells = df.iloc[1:, 1:].to_numpy(dtype=object)
+    return pd.DataFrame({
+        "X": np.tile(xs, len(ys)),          # x varies fastest, matching row-major cells.ravel()
+        "Y": np.repeat(ys, len(xs)),
+        "Z": cells.ravel(),
+    })
 
 
 # ----------------------------------------------------------------------------- numeric extraction
@@ -246,7 +323,7 @@ class XYZData:
 
 
 def extract_xyz(df: pd.DataFrame, x_col, y_col, z_col) -> XYZData:
-    """Coerce three columns to numbers and drop rows with any NaN (original rule)."""
+    """Coerce three columns to numbers and drop rows with any empty / non-numeric value."""
     cols = {"x": x_col, "y": y_col, "z": z_col}
     raw = pd.DataFrame({k: df[c] for k, c in cols.items()})
     num = raw.apply(lambda s: pd.to_numeric(s, errors="coerce"))

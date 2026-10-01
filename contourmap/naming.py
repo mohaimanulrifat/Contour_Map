@@ -1,7 +1,7 @@
 """Output file naming: sanitising, prefix/suffix/custom names and overwrite handling.
 
-Pure functions, no GUI. Half Cell Potential uses the original app's naming rule
-("legacy"); Universal mode uses Windows-safe sanitising and the user's options.
+Pure functions, no GUI: Windows-safe sanitising, the user's prefix/suffix/custom name, and
+what to do when a file already exists.
 """
 import os
 import re
@@ -22,13 +22,7 @@ class NamingOptions:
     prefix: str = ""
     suffix: str = ""
     custom_name: str = ""         # replaces the pattern, but only when ONE sheet is processed
-    legacy: bool = False          # original app's rule (see sanitize_legacy); Half Cell Potential
     on_exists: str = "number"     # "ask" | "number" | "overwrite"
-
-
-def sanitize_legacy(name: str) -> str:
-    """The original app's rule: keep letters, digits, space, '_' and '-'; everything else -> '_'."""
-    return "".join(c if c.isalnum() or c in " _-" else "_" for c in str(name))
 
 
 def sanitize_windows(name: str) -> str:
@@ -43,9 +37,6 @@ def sanitize_windows(name: str) -> str:
 
 def build_basename(opts: NamingOptions, file_base: str, sheet: str, single_sheet: bool = False) -> str:
     """File name without extension for one sheet."""
-    if opts.legacy:
-        # exactly the original: '<file>_<sanitised sheet>' (the file name is not touched)
-        return opts.prefix + opts.pattern.format(file=file_base, sheet=sanitize_legacy(sheet)) + opts.suffix
     if single_sheet and opts.custom_name.strip():
         core = opts.custom_name.strip()
     else:

@@ -1,19 +1,15 @@
 @echo off
-REM Clean previous build artifacts
-echo Cleaning previous build folders...
-rmdir /s /q build 2>nul
-rmdir /s /q dist 2>nul
-del /q ContourMapApp_GUI.spec 2>nul
-
-REM Build using PyInstaller (via python -m to avoid PATH problems)
-echo Building ContourMapApp.exe (onefile, hidden console) ...
-python -m PyInstaller --onefile --noconsole --name "ContourMapApp" --icon "contour.ico" --hidden-import openpyxl --hidden-import xlrd --hidden-import scipy.spatial "ContourMapApp_GUI.py"
-
+REM Builds the release files on Windows: a zip (folder build) and the single portable .exe.
+REM Needs Python 3.12 and:  pip install -r requirements-build.txt
+REM Output: release\ContourMapGenerator-<version>-win64.zip
+REM         release\ContourMapGenerator-<version>-portable.exe
+REM         release\SHA256SUMS.txt
+python tools\build_release.py --licenses
 if %ERRORLEVEL% neq 0 (
-  echo ERROR: PyInstaller failed.
+  echo ERROR: the build failed.
   pause
   exit /b %ERRORLEVEL%
 )
-
-echo Build finished. Output: dist\ContourMapApp.exe
+echo.
+echo Done. See the release folder.
 pause

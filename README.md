@@ -1,170 +1,149 @@
 # Contour Map Generator
 
-A Windows desktop tool (Python / tkinter) that turns X/Y/Z data in Excel or CSV files into
-contour maps. A **Mode** dropdown at the top decides how much the user has to set up:
+**X / Y / Z data from Excel, CSV and text files, turned into contour maps. One image per sheet. Free, for Windows.**
 
-| Mode | What the window shows |
+![Contour Map Generator in action](docs/main-window.png)
+
+## Download
+
+**[Download Contour Map Generator 1.0.0](https://github.com/mohaimanulrifat/Contour_Map/releases/latest)**
+
+| File | What it is |
 |---|---|
-| **Half Cell Potential** (default) | A locked *format*: open a file, press Generate. Everything is automatic (all sheets, X/Y/Z found by header name, ASTM C876-15 style, PNG at 300 DPI next to the data file). A read-only data preview is shown; there are no settings. |
-| **Universal (custom data)** | Settings tabs: **Data** (first row as titles, which sheets), **Labels** (title, axis names, colorbar label), **Output** (folder, file type, DPI, transparency, file naming, overwrite behaviour). Column pickers and plot options arrive in Stage 3. |
+| `ContourMapGenerator-1.0.0-win64.zip` | **Recommended.** The app with its files folder, sample data, terms and licences. |
+| `ContourMapGenerator-1.0.0-portable.exe` | **One single file**, no folder. Put it anywhere and run it. It starts a little slower, because it unpacks itself each time. |
 
-Both modes share the same engine, the data preview, the progress bar with Cancel, and the
-results log (which file was saved, which sheet was skipped or failed and why).
+Windows 10 or 11, 64-bit. Nothing to install: no Python, no Excel, no account.
 
-> **Status: Stage 2 of 4.** Stage 1 = mode selector + refactor + regression test.
-> Stage 2 = preview table, header toggle, labels, multi-sheet, output/naming options.
-> Next: Stage 3 (column dropdowns and plot settings for Universal), Stage 4 (live map preview,
-> remaining settings persistence, more tests).
+## What it does
 
-## Using it
+- Reads **Excel** (`.xlsx`, `.xls`), **CSV** and **text** files, whatever the delimiter, encoding or decimal comma.
+- Turns **every sheet into its own contour map image**, named after the sheet. One bad sheet never stops the others, and the results box says why it failed.
+- Handles **column data** (every row is a point) and **grid / matrix data** (row headers are Y, column headers are X, cells are Z).
+- Shows a **live map preview** inside the window, with pan, zoom and reset, that follows every setting you change.
+- Shows a **data preview** of the first rows of any sheet, so you can see what the app will read before you convert.
+- Lets you choose the **X, Y and Z columns**, skip title rows above and total rows below the table, and tells you how many rows are valid and how many were left out.
+- Saves **PNG, JPG, PDF, SVG or TIFF**, at 72, 150, 300 or 600 DPI, with an optional transparent background.
 
-1. Choose a **Mode**, click **Open file…** (`.xlsx`, `.xls`, `.csv`, `.txt`).
-2. The **Data preview** shows the first 20 rows of the sheet picked in the *Sheet* box.
-3. *Universal only:* untick **Use first row as column titles** if the file has no header (columns
-   are then called `Column 1`, `Column 2`…; the preview updates immediately). Tick the sheets to
-   process (or **Process all sheets**). Edit **Labels**; boxes you don't touch follow each
-   sheet's own column titles. Set the **Output** options.
-4. Click **Generate maps**. One image per sheet; progress shows `Sheet 2 of 5: name…`.
-   **Cancel** stops after the sheet being drawn. A sheet that fails is logged and the rest continue.
+## Quick start
 
-**File names (Universal).** Default: `<sheet name>.<type>`. Options: include the data file name
-(`<file>_<sheet>`), prefix, suffix, and a custom name (only offered when exactly one sheet is
-processed). Characters Windows doesn't allow (`< > : " / \ | ? *`), reserved names such as `CON`,
-and trailing dots/spaces are replaced or removed. If a file already exists you can choose **Ask**
-(overwrite / new number / skip), **Add a number** (`name (1).png`) or **Overwrite**. Two sheets that
-would end up with the same name in one run are always numbered, never overwritten.
-**File types:** PNG, JPG, PDF, SVG, TIFF · **DPI:** 72/150/300/600 · optional transparent background
-(not for JPG).
+1. **Download** the zip from the link above.
+2. **Unblock it first.** Right-click the zip, choose Properties, and if you see "This file came from another computer and might be blocked", tick **Unblock**, then OK. Do this before unzipping.
+3. **Unzip** it somewhere you can write to, such as your Documents folder or `C:\Apps\`. Avoid `C:\Program Files`.
+4. Open the `ContourMapGenerator-1.0.0` folder and double-click **ContourMapGenerator.exe**.
+5. If Windows shows a blue box saying "Windows protected your PC", click **More info**, then **Run anyway**. See the questions below for why that appears.
+6. Click **Open file…**, choose your file, look at the **Map preview**, and click **Generate maps**.
 
-**Remembered settings.** The last mode, last opened folder and, per mode, the output folder, file
-type, DPI, transparency, naming options and header choice are stored in `contour_settings.json`
-next to the app (or in `%APPDATA%\ContourMapApp` if that folder isn't writable). Delete the file
-to reset. It is ignored by git.
+The images are saved in the folder shown under **Output**, named after each sheet: a sheet called `Survey A` becomes `Survey A.png`.
 
-## Install and run
+No data of your own yet? The zip has a `sample_data` folder with an example workbook and a CSV.
 
-```bat
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python ContourMapApp_GUI.py
+Using the portable file? Skip steps 3 and 4: just double-click `ContourMapGenerator-1.0.0-portable.exe`.
+
+![A map made from the sample workbook](docs/sample-map.png)
+
+## Features
+
+- **Interpolation:** linear, cubic (smooth) or nearest, on a grid of up to 2000 points a side. If cubic is not possible for a sheet, the app uses linear and says so.
+- **Contours:** filled colours, lines, or both. A number of levels, or your own minimum, maximum and step.
+- **33 colormaps**, with a preview strip and a Reverse tick box.
+- **Contour labels, data points, grid lines, colorbar,** equal aspect ratio, inverted axes, your own axis limits.
+- **Mask outside the data hull**, to leave blank the area your measurements do not cover.
+- **Labels:** title, axis names and colorbar label, filled in from your column titles, with your own text where you want it.
+- **Font size and figure size.**
+- **File names:** each image is named after its sheet. Add the data file's name, a prefix, a suffix, or a custom name when you make a single map. Characters Windows does not allow are replaced.
+- **Careful with your files:** nothing is overwritten without asking, unless you choose to. You can also have the app add a number, as in `Survey A (1).png`.
+- **Runs in the background** with a progress bar ("Sheet 2 of 5") and a Cancel button. The window never freezes.
+- **Remembers your settings** between runs.
+
+## Tips
+
+- **Look at the Map preview first.** It uses the same settings as the saved image, so what you see is what you get.
+- **The line under the X / Y / Z boxes tells you the truth about your data.** "63 valid points of 63 rows" is good. A big number of dropped rows usually means a wrong column, or title and total rows that need *Skip rows*.
+- **Title lines above your table?** Set *Skip rows at top*. Totals below it? Set *Ignore rows at bottom*.
+- **No header row?** Untick *Use first row as column titles*. The columns are then called Column 1, Column 2 and so on.
+- **Sheets that do not all use the same column names?** Pick the columns once. Where a sheet lacks those names, the app uses the same column positions, and the results box tells you.
+- **A blank corner on the map** is normal for linear and cubic: the map is only drawn where your points surround it. Choose *Nearest* if you want the whole rectangle filled.
+
+## Known limitations
+
+These are known and deliberate, not faults:
+
+- A contour map is **interpolated between your points**. It is only as good as the data and the method. Check important maps against your measurements.
+- X, Y and Z must be **numbers**. Dates and text cannot be used as axes.
+- Cells in Excel that hold **formulas which Excel has not calculated and saved** are read as empty. Open the file in Excel, save it, and try again.
+- Each sheet needs **one table**: no merged cells, and no second table below the first. Use *Skip rows* for notes around it.
+- All the sheets of one run use **the same layout**: column format or grid format. Make two runs for a mix.
+- Very large sheets (hundreds of thousands of points) take a long time, because interpolation works on every point.
+- Points that all lie on one line, or that all share one X or Y value, cannot make a map. The app says so.
+- *Check for updates* needs an internet connection. Nothing else does.
+
+## Privacy
+
+No data collected. The app sends nothing anywhere, except when you click Check for updates.
+
+Your files, your maps and your settings stay on your PC.
+
+## Questions
+
+**Is it really free?**
+Yes, for personal and commercial work. The maps you make are yours. See [TERMS.md](TERMS.md).
+
+**Why does Windows warn me about it?**
+The app is not signed with a paid code-signing certificate, and Windows has not seen it on many PCs yet, so it shows a warning for programs it does not recognise. The warning says nothing about what the program does. You can check your download against the published checksum, below.
+
+**Is the source code available?**
+No. The app is free to use, but the code is private. The open-source parts inside it keep their own licences, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+**Which download should I choose, the zip or the portable file?**
+The zip starts faster and keeps its settings next to the app. The portable file is a single `.exe`, handy on a USB stick or to email around inside a team. It unpacks itself in a temporary folder each time it starts, so it takes a few seconds longer.
+
+**Does it work offline?**
+Yes. Only *Check for updates* uses the internet.
+
+**Where are my maps saved?**
+In the folder shown on the Output tab, which the app remembers. Settings sit in a small file next to the app; **Help, Open settings folder** takes you there.
+
+**How do I check my download?**
+Open PowerShell in the folder where the zip is and run:
+
+```powershell
+Get-FileHash .\ContourMapGenerator-1.0.0-win64.zip -Algorithm SHA256
 ```
 
-Dependencies: pandas, numpy, matplotlib, scipy, openpyxl (`.xlsx`) and xlrd (`.xls`).
-`xlrd` is the only addition over the original `requirements.txt`: it is small, and without it
-`.xls` files cannot be read at all (the original silently relied on it being installed).
+Compare what it prints with the line for that file in `SHA256SUMS.txt` on the release page. If they match, the file is exactly the one that was published.
 
-## Build the `.exe`
+**Can I make the same map from many files?**
+Open them one at a time: the settings stay as you left them, so each new file only needs *Generate maps*.
 
-```bat
-pip install -r requirements-dev.txt
-build.bat
-```
+## Suggestions and problems
 
-This produces `dist\ContourMapApp.exe` (one file, no console). `build.bat` and
-`ContourMapApp.spec` both work; both list `openpyxl`, `xlrd` and `scipy.spatial` as hidden
-imports. `ContourMapApp_GUI.py` stays the entry point and just starts the `contourmap` package.
+- [Send a suggestion](https://github.com/mohaimanulrifat/Contour_Map/issues/new?template=suggestion.yml)
+- [Report a problem](https://github.com/mohaimanulrifat/Contour_Map/issues/new?template=bug_report.yml)
 
-## Tests
+Both are short forms. For a problem, the app's **Help, About, Copy version info** gives you the details to paste in.
 
-```bat
-pip install -r requirements-dev.txt
-python -m pytest
-```
+No GitHub account? Email **mohaimanul.islam@outlook.com**.
 
-## Project layout
+If you attach data, check it first: it is public, and may contain things you would rather keep private.
 
-```
-ContourMapApp_GUI.py      entry point (kept so build.bat / .spec keep working)
-contourmap/
-  presets.py              ModePreset + PlotSettings dataclasses, one preset per mode
-  data_loader.py          reading Excel/CSV, x/y/z column detection, numeric cleaning
-  engine.py               interpolation + plotting (matplotlib Figure API, no pyplot)
-  naming.py               file-name building, sanitising, overwrite/numbering
-  session.py              opened file (cached sheets, preview), user options -> run config
-  settings.py             last-used settings JSON
-  runner.py               one-sheet pipeline and the batch loop (per-sheet error isolation)
-  worker.py               background thread + queue + cancel (no tkinter)
-  gui.py                  tkinter front end, presentation only
-sample_data/              half_cell_sample.xlsx (multi-sheet demo/test data)
-tools/make_sample_data.py regenerates the sample workbook
-tests/                    regression test (+ baseline from the original app), naming, session/settings
-```
+## About
 
-## Half Cell Potential mode: exactly what the original app did
+Made by **Mohaimanul Islam Rifat**, a media professional from Dhaka, Bangladesh.
 
-This section documents the **original** single-file app (initial commit), read from its code.
-Half Cell Potential mode reproduces all of it; `tests/test_regression_hcp.py` enforces it.
+I needed contour maps from survey data in Excel, quickly and without wrestling a programming library each time. I am not a programmer. I designed this app and built it with the help of an AI coding assistant (Claude Code), then tested it until it was reliable enough to share.
 
-**Workflow.** Pick a file; the app makes one image per sheet. `.xlsx`/`.xls` → every sheet of the
-workbook. `.csv` → treated as one sheet called `Sheet1`.
+- LinkedIn: [md-mohaimanul-islam](https://www.linkedin.com/in/md-mohaimanul-islam)
+- GitHub: [mohaimanulrifat](https://github.com/mohaimanulrifat)
+- Email: mohaimanul.islam@outlook.com
 
-**Expected sheet layout.**
-- Row 1 is the header row. Row 2 onward is data. Header text is whitespace-stripped.
-- At least 3 columns, otherwise the sheet is skipped (*"less than 3 columns"*).
-- X, Y, Z columns are found by header name, case-insensitive, per axis in this order:
-  exactly `x` / `y` / `z`; else a header that *starts with* that letter; else a header containing
-  the letter as a separate token, e.g. `Distance (x)`. If the same column would be used for two
-  axes, those matches are discarded.
-- **If any of X, Y, Z is not found by name, the first three columns are used (X, Y, Z in that
-  order)** — for all three, not just the missing one. Extra columns are ignored.
-- Values are converted to numbers; anything non-numeric or empty becomes NaN and **the whole row is
-  dropped**. If nothing is left the sheet is skipped (*"no numeric x/y/z data"*).
+![The About window](docs/about.png)
 
-**Interpolation.** `scipy.interpolate.griddata`, method `cubic` (Clough–Tocher on a Delaunay
-triangulation), onto a **200 × 200** grid spanning the min/max of the X and Y data
-(`np.linspace`). If the cubic result is entirely NaN, or cubic raises, it falls back to `linear`.
-Cubic/linear give NaN outside the convex hull of the points, so a non-rectangular survey leaves
-blank corners. If linear also fails (e.g. all points on one line) the sheet is reported as an error.
+## Terms and notices
 
-**Plot.**
+- [Terms of use](TERMS.md): free for personal and commercial work, the maps are yours, the app may not be sold, and it comes with no warranty.
+- [Third-party notices](THIRD_PARTY_NOTICES.md): the open-source parts inside the app, with their versions and licences. The full licence texts are in the `licenses` folder, and in the app under Help, Third-party licences.
+- [What changed](CHANGELOG.md)
+- [Building and releasing](docs/BUILDING.md), for the maintainer.
 
-| Item | Value |
-|---|---|
-| Figure size | 8 × 7 inches |
-| Filled contours | `contourf`, 15 levels, colormap `plasma` |
-| Colorbar | label `Corrosion Potential (V)` |
-| Contour lines | 15 levels, black, line width 0.5 (negative levels render dashed — matplotlib's default for single-colour lines) |
-| Line labels | inline, font size 8, format `%.3f` (e.g. `-0.280`) |
-| Title | `Contour Map Based on ASTM C876-15` |
-| X / Y axis labels | the exact header text of the X / Y column |
-| Grid | on |
-| Thresholds | none (the C876 −0.20 / −0.35 V thresholds are **not** drawn; only the title refers to the standard) |
-
-**Output.** PNG, **300 DPI**, `bbox_inches='tight'`. Saved **in the same folder as the input file**
-as `<workbook name>_<sheet name>.png`, where every character of the sheet name that is not a
-letter, digit, space, `_` or `-` becomes `_` (sheet `Wall (B)` → `half_cell_sample_Wall _B_.png`).
-Existing files are overwritten silently (Half Cell Potential keeps this behaviour; if two sheets
-sanitise to the same name, the later one now gets ` (1)` instead of silently replacing the first).
-
-**What changed in the refactor (on purpose).**
-- Each sheet is loaded and processed independently, so one bad sheet can't stop the rest.
-- Work runs on a background thread that only posts messages to the GUI (the original updated
-  widgets from the worker thread, which tkinter does not support).
-- Failures are reported in a results log with the reason; the "collinear points" Qhull dump is
-  replaced by a one-line explanation. The sheet still fails exactly as before.
-- Plotting uses matplotlib's `Figure` API instead of `pyplot`, so nothing leaks between sheets.
-- CSV files now get delimiter/encoding auto-detection (a plain UTF-8 comma CSV reads identically).
-
-### Regression test
-
-`tests/baseline/` holds a byte-for-byte copy of the original script and the output it produced for
-`sample_data/half_cell_sample.xlsx` (images, interpolated grids, contour levels, labels, which
-sheets were skipped/failed). `generate_baseline.py` re-creates that baseline by executing the
-**original** code headlessly; it is not part of the normal test run. The test checks, in order:
-saved file names → numeric grids and levels → title/labels/figure size/line labels →
-PNG pixels (exact when matplotlib's version matches the baseline's, otherwise a tiny tolerance).
-
-## Adding a new mode (a new test type)
-
-A mode is a `ModePreset` in `contourmap/presets.py`: default `PlotSettings` (colormap, levels,
-labels, figure size…), `OutputSettings`, `column_mode` (`"auto_hcp"` rule or `"user"` picks),
-`naming` (file-name pattern and overwrite behaviour) and `customizable`:
-
-- `customizable=False` → a locked format like Half Cell Potential (no settings tabs; output goes next to the data file).
-- `customizable=True` → the Universal-style settings tabs.
-
-Add it to the `MODES` dict and it appears in the dropdown; the engine and GUI need no changes.
-To ship a build with only some modes (e.g. a company build with only Half Cell Potential, or a
-public build with only Universal), keep just those entries in `MODES`; with one entry the
-dropdown simply lists that mode.
+© 2026 Mohaimanul Islam Rifat. All rights reserved.

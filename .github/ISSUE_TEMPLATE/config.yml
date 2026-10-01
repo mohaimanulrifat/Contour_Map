@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Download the latest version
+    url: https://github.com/mohaimanulrifat/Contour_Map/releases/latest
+    about: The zip, the portable file, the checksums and what changed.
+  - name: How to use the app
+    url: https://github.com/mohaimanulrifat/Contour_Map#quick-start
+    about: The quick start, tips and the questions people ask most.

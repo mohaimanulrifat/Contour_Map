@@ -1,1 +1,1 @@
-"""Contour map engine: data loading, interpolation/plotting, mode presets, batch runner and GUI."""
+"""Contour map generator: data loading, interpolation/plotting, batch runner and GUI."""

@@ -1,0 +1,99 @@
+name: Build and release
+
+# Pull requests:  build + test, files are attached to the run (Actions tab -> run -> Artifacts)
+# Tag  v*:        build + test + publish a GitHub release with the zip, the portable exe and checksums
+# Manual run:     same as a pull request; tick "draft_release" to also create a DRAFT release to review
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: "Also create a draft release (review it, then publish by hand)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-build.txt
+
+      - name: Install
+        run: python -m pip install -r requirements-build.txt
+
+      - name: Tag matches the app version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: python
+        run: |
+          import os, sys
+          sys.path.insert(0, ".")
+          from contourmap.version import VERSION
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          if tag != VERSION:
+              sys.exit(f"Tag v{tag} does not match the app version {VERSION} (contourmap/version.py)")
+
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Build (zip, portable exe, checksums)
+        run: python tools/build_release.py --licenses
+
+      - name: Self-test the portable exe
+        shell: pwsh
+        run: |
+          $exe = (Get-ChildItem release\*-portable.exe).FullName
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest","selftest-portable.txt" -Wait -PassThru
+          Get-Content selftest-portable.txt
+          if ($p.ExitCode -ne 0) { throw "portable exe self-test failed" }
+
+      - name: Self-test the zip build
+        shell: pwsh
+        run: |
+          Expand-Archive release\*-win64.zip -DestinationPath unzipped
+          $exe = (Get-ChildItem unzipped -Recurse -Filter ContourMapGenerator.exe | Select-Object -First 1).FullName
+          $p = Start-Process -FilePath $exe -ArgumentList "--selftest","selftest-zip.txt" -Wait -PassThru
+          Get-Content selftest-zip.txt
+          if ($p.ExitCode -ne 0) { throw "zip build self-test failed" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: contour-map-generator-windows
+          path: release/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.draft_release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: contour-map-generator-windows
+          path: release
+
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(python3 -c "import re;print(re.search(r'VERSION = \"([^\"]+)\"', open('contourmap/version.py').read()).group(1))")
+          python3 tools/release_notes.py "$VERSION" > release_notes.md
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            gh release create "${GITHUB_REF_NAME}" release/* --title "Contour Map Generator ${VERSION}" --notes-file release_notes.md --verify-tag
+          else
+            gh release create "v${VERSION}" release/* --title "Contour Map Generator ${VERSION}" --notes-file release_notes.md --draft --target "${GITHUB_SHA}"
+          fi
