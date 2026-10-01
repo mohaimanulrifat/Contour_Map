@@ -1,4 +1,4 @@
-"""Last-used settings, stored per mode in a small JSON file next to the app.
+"""Last-used settings, stored in a small JSON file next to the app.
 
 If the app folder is not writable (e.g. installed under Program Files) the file is kept in
 the user's profile instead. A missing or corrupt file is never an error: defaults are used.
@@ -28,11 +28,11 @@ def candidate_paths() -> List[str]:
 
 
 class SettingsStore:
-    """dict-like: top-level keys are shared values, `modes[<mode name>]` holds per-mode values."""
+    """Flat JSON settings: `get`/`set` for single values, `values`/`set_values` for a whole dict."""
 
     def __init__(self, path: str = None):
         self._explicit = path
-        self.data: Dict[str, Any] = {"modes": {}}
+        self.data: Dict[str, Any] = {}
         self.load()
 
     # -- io ---------------------------------------------------------------------------
@@ -43,9 +43,6 @@ class SettingsStore:
                     loaded = json.load(fh)
                 if isinstance(loaded, dict):
                     self.data = loaded
-                    self.data.setdefault("modes", {})
-                    if not isinstance(self.data["modes"], dict):
-                        self.data["modes"] = {}
                     return
             except (OSError, ValueError):
                 continue
@@ -71,9 +68,9 @@ class SettingsStore:
     def set(self, key: str, value) -> None:
         self.data[key] = value
 
-    def mode(self, name: str) -> Dict[str, Any]:
-        m = self.data["modes"].get(name)
-        return m if isinstance(m, dict) else {}
+    def values(self, key: str = "options") -> Dict[str, Any]:
+        v = self.data.get(key)
+        return v if isinstance(v, dict) else {}
 
-    def set_mode(self, name: str, values: Dict[str, Any]) -> None:
-        self.data["modes"][name] = dict(values)
+    def set_values(self, values: Dict[str, Any], key: str = "options") -> None:
+        self.data[key] = dict(values)

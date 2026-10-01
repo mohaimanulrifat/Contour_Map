@@ -1,35 +1,44 @@
 """tkinter front end. Presentation only: all real work lives in the other modules.
 
-Half Cell Potential is a locked *format*: the window shows just the file, a read-only preview
-and Generate. Universal shows the settings tabs (Data / Labels / Output).
+Layout: header (name/logo, file) · left: tabs Data / Plot / Labels / Output · right: data preview
+and results log · footer: Generate / Cancel / progress.
 """
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from tkinter.scrolledtext import ScrolledText
 from typing import Dict, List, Optional
 
-from . import presets
-from .data_loader import DataLoadError, SUPPORTED_EXTS
+import matplotlib
+
+from . import branding, theme
+from .data_loader import SUPPORTED_EXTS, DataLoadError
+from .defaults import COLORMAPS, DEFAULT_OUTPUT, DEFAULT_PLOT
 from .engine import FILE_TYPES
-from .presets import ModePreset
 from .runner import SheetResult
-from .session import (DPI_CHOICES, DataSession, UserOptions, clean_saved, make_run_config,
-                      to_saved, validate)
+from .session import (DPI_CHOICES, DataSession, OptionError, UserOptions, clean_saved,
+                      make_run_config, parse_float, parse_int, to_saved, validate)
 from .settings import SettingsStore
+from .theme import C, Card, PillButton, ProgressBar, ScrollFrame, TabBar, font, kicker, mono, px
 from .worker import BatchWorker
 
-APP_TITLE = "Contour Map Generator"
 EXISTS_LABELS = {"ask": "Ask me", "number": "Add a number: name (1)", "overwrite": "Overwrite"}
+INTERP_LABELS = {"linear": "Linear", "cubic": "Cubic (smooth)", "nearest": "Nearest"}
 LABEL_KEYS = ("title", "xlabel", "ylabel", "cbar_label")
+TABS = (("data", "01", "Data"), ("plot", "02", "Plot"), ("labels", "03", "Labels"), ("output", "04", "Output"))
+
+
+def _key_of(mapping: Dict[str, str], label: str, default: str) -> str:
+    return next((k for k, v in mapping.items() if v == label), default)
 
 
 class App(tk.Tk):
     def __init__(self, settings: Optional[SettingsStore] = None):
         super().__init__()
-        self.title(APP_TITLE)
-        self.geometry("1120x760")
-        self.minsize(900, 600)
+        self.title(branding.APP_NAME)
+        theme.setup(self)
+        self.geometry(f"{px(1240)}x{px(800)}")
+        self.minsize(px(1000), px(660))
+        self._set_icon()
 
         self.store = settings or SettingsStore()
         self.session = DataSession()
@@ -38,193 +47,346 @@ class App(tk.Tk):
         self.sheet_vars: Dict[str, tk.BooleanVar] = {}
         self.sheet_checks: List[ttk.Checkbutton] = []
         self._edited = {k: False for k in LABEL_KEYS}      # label box changed by the user?
-        self._filling = False                              # programmatic label fill in progress
-
-        start = self.store.get("last_mode")
-        self.preset: ModePreset = presets.MODES.get(start) or presets.MODES[presets.DEFAULT_MODE]
-        if not self.preset.available:
-            self.preset = presets.MODES[presets.DEFAULT_MODE]
-        self._shown_mode = self.preset.name
+        self._cols_edited = False                          # X/Y/Z dropdowns changed by the user?
+        self._filling = False                              # programmatic fill in progress
+        self._logo = None
+        self._positions = None                             # column indices of the user's X/Y/Z picks
 
         self._make_vars()
-        self._build_mode_bar()
-        self._build_file_row()
+        self._build_header()
+        self._build_footer()                               # packed first so it keeps its space
         self._build_body()
-        self._build_run_row()
-        self._apply_saved(self.store.mode(self.preset.name))
-        self._apply_mode_ui()
+        self._apply_saved(self.store.values())
+        self._sync_states()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _set_icon(self):
+        try:
+            if os.name == "nt":
+                self.iconbitmap(branding.resource_path(branding.ICON_FILE))
+        except tk.TclError:
+            pass
 
     # ================================================================== variables
     def _make_vars(self):
-        d = presets.UNIVERSAL.output
-        self.mode_var = tk.StringVar(value=self.preset.name)
-        self.path_var = tk.StringVar(value="No file selected")
+        p, o = DEFAULT_PLOT, DEFAULT_OUTPUT
+        self.file_var = tk.StringVar(value="No file open")
+        self.layout_var = tk.StringVar(value="columns")
         self.header_var = tk.BooleanVar(value=True)
+        self.skip_top_var = tk.StringVar(value="0")
+        self.skip_bottom_var = tk.StringVar(value="0")
+        self.col_vars = [tk.StringVar() for _ in range(3)]
+        self.col_status = tk.StringVar()
         self.all_var = tk.BooleanVar(value=True)
         self.preview_var = tk.StringVar()
         self.preview_info = tk.StringVar()
+        # plot
+        self.interp_var = tk.StringVar(value=INTERP_LABELS[p.interpolation])
+        self.res_var = tk.StringVar(value=str(p.grid_resolution))
+        self.fill_var = tk.StringVar(value=p.fill_mode)
+        self.levmode_var = tk.StringVar(value="number")
+        self.levels_var = tk.StringVar(value=str(p.levels))
+        self.lmin_var, self.lmax_var, self.lstep_var = (tk.StringVar() for _ in range(3))
+        self.cmap_var = tk.StringVar(value=p.cmap)
+        self.rev_var = tk.BooleanVar(value=p.reverse_cmap)
+        self.flags = {k: tk.BooleanVar(value=v) for k, v in (
+            ("show_labels", p.show_labels), ("show_points", p.show_points), ("show_grid", p.show_grid),
+            ("show_colorbar", p.show_colorbar), ("equal_aspect", p.equal_aspect),
+            ("invert_x", p.invert_x), ("invert_y", p.invert_y), ("mask_hull", p.mask_outside_hull))}
+        self.lim_vars = {k: tk.StringVar() for k in ("xmin", "xmax", "ymin", "ymax")}
+        self.font_var = tk.StringVar(value="10")
+        self.figw_var, self.figh_var = tk.StringVar(value=f"{p.figsize[0]:g}"), tk.StringVar(value=f"{p.figsize[1]:g}")
+        # labels
         self.label_vars = {k: tk.StringVar() for k in LABEL_KEYS}
         for k, v in self.label_vars.items():
             v.trace_add("write", lambda *a, key=k: self._label_typed(key))
+        # output
         self.out_dir_var = tk.StringVar()
-        self.type_var = tk.StringVar(value=d.file_type.upper())
-        self.dpi_var = tk.StringVar(value=str(d.dpi))
-        self.trans_var = tk.BooleanVar(value=d.transparent)
+        self.type_var = tk.StringVar(value=o.file_type.upper())
+        self.dpi_var = tk.StringVar(value=str(o.dpi))
+        self.trans_var = tk.BooleanVar(value=o.transparent)
         self.incl_var = tk.BooleanVar(value=False)
-        self.prefix_var = tk.StringVar()
-        self.suffix_var = tk.StringVar()
-        self.custom_var = tk.StringVar()
-        self.exists_var = tk.StringVar(value=EXISTS_LABELS[presets.UNIVERSAL.naming.on_exists])
-        self.status_var = tk.StringVar(value="Status: waiting for input…")
+        self.prefix_var, self.suffix_var, self.custom_var = (tk.StringVar() for _ in range(3))
+        self.exists_var = tk.StringVar(value=EXISTS_LABELS["ask"])
+        self.status_var = tk.StringVar(value="Ready. Open a file to begin.")
 
-    # ================================================================== layout
-    def _build_mode_bar(self):
-        bar = ttk.Frame(self, padding=(10, 10, 10, 0))
-        bar.pack(fill="x")
-        ttk.Label(bar, text="Mode", font=("Segoe UI", 10, "bold")).pack(side="left")
-        self.mode_box = ttk.Combobox(bar, textvariable=self.mode_var, state="readonly", width=28,
-                                     values=[m.name for m in presets.MODES.values() if m.available])
-        self.mode_box.pack(side="left", padx=8)
-        self.mode_box.bind("<<ComboboxSelected>>", lambda e: self._on_mode_change())
-        self.mode_desc = ttk.Label(self, wraplength=1050, justify="left", padding=(10, 4))
-        self.mode_desc.pack(fill="x")
+    # ================================================================== header / footer
+    def _build_header(self):
+        bar = tk.Frame(self, bg=C.bg)
+        bar.pack(fill="x", padx=px(24), pady=(px(18), px(10)))
+        logo = branding.logo_path()
+        if logo:
+            try:
+                from PIL import Image, ImageTk
+                img = Image.open(logo)
+                h = px(40)
+                img = img.resize((max(1, int(img.width * h / img.height)), h), Image.LANCZOS)
+                self._logo = ImageTk.PhotoImage(img, master=self)
+                tk.Label(bar, image=self._logo, bg=C.bg).pack(side="left", padx=(0, px(14)))
+            except Exception:
+                self._logo = None
+        names = tk.Frame(bar, bg=C.bg)
+        names.pack(side="left")
+        tk.Label(names, text=branding.APP_NAME, bg=C.bg, fg=C.text, font=font(16, True)).pack(anchor="w")
+        if branding.APP_TAGLINE:
+            tk.Label(names, text=branding.APP_TAGLINE, bg=C.bg, fg=C.muted, font=font(10)).pack(anchor="w")
+        self.open_btn = PillButton(bar, "Open file…", self.open_file, style="primary", bg=C.bg)
+        self.open_btn.pack(side="right")
+        tk.Label(bar, textvariable=self.file_var, bg=C.bg, fg=C.accent_pale, font=font(10),
+                 anchor="e").pack(side="right", padx=px(16))
 
-    def _build_file_row(self):
-        row = ttk.Frame(self, padding=(10, 0, 10, 4))
+    def _build_footer(self):
+        foot = tk.Frame(self, bg=C.bg)
+        foot.pack(side="bottom", fill="x", padx=px(24), pady=(px(6), px(18)))
+        row = tk.Frame(foot, bg=C.bg)
         row.pack(fill="x")
-        self.open_btn = ttk.Button(row, text="Open file…", command=self.open_file)
-        self.open_btn.pack(side="left")
-        ttk.Label(row, textvariable=self.path_var, anchor="w").pack(side="left", padx=10, fill="x", expand=True)
+        self.gen_btn = PillButton(row, "Generate maps", self.generate, style="primary", bg=C.bg, padx=28)
+        self.gen_btn.pack(side="left")
+        self.cancel_btn = PillButton(row, "Cancel", self.cancel, style="secondary", bg=C.bg)
+        self.cancel_btn.pack(side="left", padx=px(10))
+        self.folder_btn = PillButton(row, "Open output folder", self._open_output_folder, style="ghost", bg=C.bg)
+        if hasattr(os, "startfile"):                       # Windows only
+            self.folder_btn.pack(side="left")
+        tk.Label(row, textvariable=self.status_var, bg=C.bg, fg=C.muted, font=font(10),
+                 anchor="w").pack(side="left", padx=px(14))
+        self.progress = ProgressBar(foot)
+        self.progress.pack(fill="x", pady=(px(12), 0))
 
+    # ================================================================== body
     def _build_body(self):
-        pane = ttk.PanedWindow(self, orient="horizontal")
-        pane.pack(fill="both", expand=True, padx=10, pady=4)
-        self.left = ttk.Frame(pane, width=430)
-        right = ttk.Frame(pane)
-        pane.add(self.left, weight=0)
-        pane.add(right, weight=1)
+        body = tk.Frame(self, bg=C.bg)
+        body.pack(fill="both", expand=True, padx=px(24), pady=(0, px(4)))
+        body.columnconfigure(0, minsize=px(480), weight=0)
+        body.columnconfigure(1, weight=1)
+        body.rowconfigure(1, weight=1)
 
-        # Locked format summary (Half Cell Potential)
-        self.fixed_panel = ttk.LabelFrame(self.left, text="Automatic settings", padding=10)
-        self.fixed_text = ttk.Label(self.fixed_panel, wraplength=390, justify="left")
-        self.fixed_text.pack(anchor="w")
+        self.tabbar = TabBar(body, self._show_tab)
+        self.tabbar.grid(row=0, column=0, sticky="w", pady=(0, px(8)))
+        left = Card(body, autoheight=False, padx=14, pady=12)
+        left.grid(row=1, column=0, sticky="nsew", padx=(0, px(16)))
+        self.scroll = ScrollFrame(left.body)
+        self.scroll.pack(fill="both", expand=True)
+        self.tab_frames = {}
+        for key, num, text in TABS:
+            self.tabbar.add(key, num, text)
+            self.tab_frames[key] = tk.Frame(self.scroll.inner, bg=C.card)
+        self._tab_data(self.tab_frames["data"])
+        self._tab_plot(self.tab_frames["plot"])
+        self._tab_labels(self.tab_frames["labels"])
+        self._tab_output(self.tab_frames["output"])
+        self.tabbar.select("data")
 
-        # Settings tabs (Universal)
-        self.tabs = ttk.Notebook(self.left)
-        self._build_data_tab()
-        self._build_labels_tab()
-        self._build_output_tab()
-
+        right = tk.Frame(body, bg=C.bg)
+        right.grid(row=0, column=1, rowspan=2, sticky="nsew")
+        right.rowconfigure(0, weight=3)
+        right.rowconfigure(1, weight=2)
+        right.columnconfigure(0, weight=1)
         self._build_preview(right)
         self._build_log(right)
 
-    def _build_data_tab(self):
-        tab = ttk.Frame(self.tabs, padding=10)
-        self.tabs.add(tab, text="Data")
-        ttk.Checkbutton(tab, text="Use first row as column titles", variable=self.header_var,
-                        command=self._on_header_toggle).pack(anchor="w")
-        ttk.Separator(tab).pack(fill="x", pady=8)
-        ttk.Label(tab, text="Sheets to process", font=("Segoe UI", 9, "bold")).pack(anchor="w")
-        self.all_check = ttk.Checkbutton(tab, text="Process all sheets", variable=self.all_var,
+    def _show_tab(self, key):
+        for k, f in self.tab_frames.items():
+            f.pack_forget()
+        self.tab_frames[key].pack(fill="both", expand=True)
+        self.scroll.scroll_top()
+
+    # ---- small builders
+    def _group(self, parent, text, first=False):
+        ttk.Label(parent, text=text, font=font(10, True), foreground=C.accent_pale).pack(
+            anchor="w", pady=(0 if first else px(16), px(6)))
+
+    def _hint(self, parent, text, wrap=420):
+        lab = ttk.Label(parent, text=text, style="Hint.TLabel", wraplength=px(wrap), justify="left")
+        lab.pack(anchor="w", pady=(px(2), 0))
+        return lab
+
+    def _row(self, parent, pady=2):
+        r = tk.Frame(parent, bg=C.card)
+        r.pack(fill="x", pady=pady)
+        return r
+
+    def _labeled(self, parent, text, widget_factory, label_w=15):
+        r = self._row(parent)
+        ttk.Label(r, text=text, style="Field.TLabel", width=label_w).pack(side="left")
+        w = widget_factory(r)
+        return r, w
+
+    def _spin(self, parent, var, lo, hi, width=7, inc=1, command=None):
+        sp = ttk.Spinbox(parent, textvariable=var, from_=lo, to=hi, increment=inc, width=width,
+                         command=command)
+        if command:
+            sp.bind("<Return>", lambda e: command())
+            sp.bind("<FocusOut>", lambda e: command())
+        return sp
+
+    # ---- tab 01: data
+    def _tab_data(self, t):
+        self._group(t, "Layout", first=True)
+        ttk.Radiobutton(t, text="Column format (X, Y, Z columns)", value="columns",
+                        variable=self.layout_var, command=self._on_reading_change).pack(anchor="w")
+        ttk.Radiobutton(t, text="Grid / matrix format", value="grid", variable=self.layout_var,
+                        command=self._on_reading_change).pack(anchor="w")
+        self._hint(t, "Grid format: row headers = Y, column headers = X, cells = Z.")
+        self.header_check = ttk.Checkbutton(t, text="Use first row as column titles",
+                                            variable=self.header_var, command=self._on_reading_change)
+        self.header_check.pack(anchor="w", pady=(px(10), 0))
+        self._labeled(t, "Skip rows at top", lambda r: self._spin(
+            r, self.skip_top_var, 0, 9999, command=self._on_reading_change).pack(side="left"), 20)
+        self._labeled(t, "Ignore rows at bottom", lambda r: self._spin(
+            r, self.skip_bottom_var, 0, 9999, command=self._on_reading_change).pack(side="left"), 20)
+
+        self._group(t, "Columns")
+        self.col_boxes = []
+        for i, name in enumerate("XYZ"):
+            def make(r, i=i):
+                cb = ttk.Combobox(r, textvariable=self.col_vars[i], state="readonly", width=30)
+                cb.pack(side="left", fill="x", expand=True)
+                cb.bind("<<ComboboxSelected>>", lambda e: self._on_column_pick())
+                self.col_boxes.append(cb)
+            self._labeled(t, f"{name} axis", make, 8)
+        self.col_status_label = ttk.Label(t, textvariable=self.col_status, style="Hint.TLabel",
+                                          wraplength=px(420), justify="left")
+        self.col_status_label.pack(anchor="w", pady=(px(4), 0))
+
+        self._group(t, "Sheets to process")
+        self.all_check = ttk.Checkbutton(t, text="Process all sheets", variable=self.all_var,
                                          command=self._on_all_toggle)
-        self.all_check.pack(anchor="w", pady=(2, 4))
-        box = ttk.Frame(tab, relief="sunken", borderwidth=1)
-        box.pack(fill="both", expand=True)
-        self.sheet_canvas = tk.Canvas(box, height=170, highlightthickness=0, background="white")
-        sb = ttk.Scrollbar(box, orient="vertical", command=self.sheet_canvas.yview)
-        self.sheet_canvas.configure(yscrollcommand=sb.set)
-        sb.pack(side="right", fill="y")
-        self.sheet_canvas.pack(side="left", fill="both", expand=True)
-        self.sheet_inner = tk.Frame(self.sheet_canvas, background="white")
-        self.sheet_canvas.create_window((0, 0), window=self.sheet_inner, anchor="nw")
-        self.sheet_inner.bind("<Configure>", lambda e: self.sheet_canvas.configure(
-            scrollregion=self.sheet_canvas.bbox("all")))
-        for ev, delta in (("<MouseWheel>", None), ("<Button-4>", -1), ("<Button-5>", 1)):
-            self.sheet_canvas.bind(ev, lambda e, d=delta: self._wheel(e, d))
-            self.sheet_inner.bind(ev, lambda e, d=delta: self._wheel(e, d))
+        self.all_check.pack(anchor="w")
+        box = tk.Frame(t, bg=C.input_line)
+        box.pack(fill="x", pady=(px(6), 0))
+        self.sheet_scroll = ScrollFrame(box, bg=C.input)
+        self.sheet_scroll.canvas.configure(height=px(130))
+        self.sheet_scroll.pack(fill="x", padx=1, pady=1)
 
-    def _wheel(self, event, delta):
-        step = delta if delta is not None else (-1 if event.delta > 0 else 1)
-        self.sheet_canvas.yview_scroll(step, "units")
+    # ---- tab 02: plot
+    def _tab_plot(self, t):
+        self._group(t, "Interpolation", first=True)
+        self._labeled(t, "Method", lambda r: ttk.Combobox(
+            r, textvariable=self.interp_var, state="readonly", width=18,
+            values=list(INTERP_LABELS.values())).pack(side="left"), 16)
+        self._labeled(t, "Grid resolution", lambda r: self._spin(
+            r, self.res_var, 10, 2000, width=7, inc=10).pack(side="left"), 16)
+        ttk.Checkbutton(t, text="Mask outside the data hull", variable=self.flags["mask_hull"]).pack(anchor="w", pady=(px(4), 0))
 
-    def _build_labels_tab(self):
-        tab = ttk.Frame(self.tabs, padding=10)
-        self.tabs.add(tab, text="Labels")
-        ttk.Label(tab, text="Pre-filled from the column titles; edit to override.\n"
-                            "Untouched boxes follow each sheet's own titles.",
-                  foreground="#555", justify="left").pack(anchor="w", pady=(0, 8))
+        self._group(t, "Contours")
+        r = self._row(t)
+        for text, val in (("Filled", "filled"), ("Lines", "lines"), ("Both", "both")):
+            ttk.Radiobutton(r, text=text, value=val, variable=self.fill_var).pack(side="left", padx=(0, px(14)))
+        r = self._row(t, pady=4)
+        ttk.Radiobutton(r, text="Number of levels", value="number", variable=self.levmode_var,
+                        command=self._sync_states).pack(side="left")
+        self.levels_spin = self._spin(r, self.levels_var, 2, 100, width=6)
+        self.levels_spin.pack(side="left", padx=px(10))
+        r = self._row(t)
+        ttk.Radiobutton(r, text="Custom", value="custom", variable=self.levmode_var,
+                        command=self._sync_states).pack(side="left")
+        self.custom_entries = []
+        for text, var in (("min", self.lmin_var), ("max", self.lmax_var), ("step", self.lstep_var)):
+            ttk.Label(r, text=text, style="Field.TLabel").pack(side="left", padx=(px(10), px(3)))
+            e = ttk.Entry(r, textvariable=var, width=6)
+            e.pack(side="left")
+            self.custom_entries.append(e)
+
+        self._group(t, "Colours")
+        r = self._row(t)
+        self.cmap_box = ttk.Combobox(r, textvariable=self.cmap_var, state="readonly", width=16, values=COLORMAPS)
+        self.cmap_box.pack(side="left")
+        self.cmap_box.bind("<<ComboboxSelected>>", lambda e: self._draw_cmap())
+        self.cmap_strip = tk.Canvas(r, width=px(110), height=px(14), highlightthickness=0, bg=C.card)
+        self.cmap_strip.pack(side="left", padx=px(10))
+        ttk.Checkbutton(t, text="Reverse colormap", variable=self.rev_var, command=self._draw_cmap).pack(anchor="w", pady=(px(4), 0))
+
+        self._group(t, "Show")
+        grid = tk.Frame(t, bg=C.card)
+        grid.pack(fill="x")
+        grid.columnconfigure((0, 1), weight=1, uniform="a")
+        items = (("Contour labels", "show_labels"), ("Data points", "show_points"),
+                 ("Grid lines", "show_grid"), ("Colorbar", "show_colorbar"),
+                 ("Equal aspect ratio", "equal_aspect"), ("Invert X axis", "invert_x"),
+                 ("Invert Y axis", "invert_y"))
+        for i, (text, key) in enumerate(items):
+            ttk.Checkbutton(grid, text=text, variable=self.flags[key]).grid(row=i // 2, column=i % 2, sticky="w")
+
+        self._group(t, "Axis limits (empty = automatic)")
+        for name, lo, hi in (("X", "xmin", "xmax"), ("Y", "ymin", "ymax")):
+            r = self._row(t)
+            ttk.Label(r, text=name, style="Field.TLabel", width=3).pack(side="left")
+            for key, lab in ((lo, "min"), (hi, "max")):
+                ttk.Label(r, text=lab, style="Field.TLabel").pack(side="left", padx=(px(6), px(3)))
+                ttk.Entry(r, textvariable=self.lim_vars[key], width=9).pack(side="left")
+
+        self._group(t, "Size and text")
+        self._labeled(t, "Font size", lambda r: self._spin(r, self.font_var, 4, 40, width=6).pack(side="left"), 16)
+
+        def figsize(r):
+            self._spin(r, self.figw_var, 2, 40, width=6, inc=0.5).pack(side="left")
+            ttk.Label(r, text="×", style="Field.TLabel").pack(side="left", padx=px(6))
+            self._spin(r, self.figh_var, 2, 40, width=6, inc=0.5).pack(side="left")
+            ttk.Label(r, text="inches", style="Field.TLabel").pack(side="left", padx=px(8))
+        self._labeled(t, "Figure size", figsize, 16)
+        self._draw_cmap()
+
+    # ---- tab 03: labels
+    def _tab_labels(self, t):
+        self._hint(t, "Pre-filled from the column titles. Edit a box to override it; boxes you "
+                      "don't touch follow each sheet's own titles.")
         for key, text in (("title", "Plot title"), ("xlabel", "X axis name"),
                           ("ylabel", "Y axis name"), ("cbar_label", "Colorbar label")):
-            ttk.Label(tab, text=text).pack(anchor="w")
-            ttk.Entry(tab, textvariable=self.label_vars[key]).pack(fill="x", pady=(0, 6))
-        ttk.Button(tab, text="Reset to column titles", command=self._reset_labels).pack(anchor="w", pady=4)
+            ttk.Label(t, text=text, style="Field.TLabel").pack(anchor="w", pady=(px(12), px(3)))
+            ttk.Entry(t, textvariable=self.label_vars[key]).pack(fill="x")
+        PillButton(t, "Reset to column titles", self._reset_labels, style="secondary", height=32).pack(anchor="w", pady=(px(16), 0))
 
-    def _build_output_tab(self):
-        tab = ttk.Frame(self.tabs, padding=10)
-        self.tabs.add(tab, text="Output")
-        tab.columnconfigure(1, weight=1)
-        r = 0
-        ttk.Label(tab, text="Output folder").grid(row=r, column=0, sticky="w")
-        r += 1
-        f = ttk.Frame(tab)
-        f.grid(row=r, column=0, columnspan=3, sticky="ew", pady=(0, 6))
-        ttk.Entry(f, textvariable=self.out_dir_var).pack(side="left", fill="x", expand=True)
-        ttk.Button(f, text="Browse…", command=self._browse_out).pack(side="left", padx=(6, 0))
-        r += 1
-        ttk.Label(tab, text="File type").grid(row=r, column=0, sticky="w")
-        ttk.Label(tab, text="DPI").grid(row=r, column=1, sticky="w", padx=8)
-        r += 1
-        self.type_box = ttk.Combobox(tab, textvariable=self.type_var, state="readonly", width=8,
-                                     values=[t.upper() for t in FILE_TYPES])
-        self.type_box.grid(row=r, column=0, sticky="w")
-        self.type_box.bind("<<ComboboxSelected>>", lambda e: self._sync_type())
-        ttk.Combobox(tab, textvariable=self.dpi_var, state="readonly", width=6,
-                     values=[str(d) for d in DPI_CHOICES]).grid(row=r, column=1, sticky="w", padx=8)
-        r += 1
-        self.trans_check = ttk.Checkbutton(tab, text="Transparent background", variable=self.trans_var)
-        self.trans_check.grid(row=r, column=0, columnspan=3, sticky="w", pady=(4, 0))
-        r += 1
-        ttk.Separator(tab).grid(row=r, column=0, columnspan=3, sticky="ew", pady=8)
-        r += 1
-        ttk.Label(tab, text="File names", font=("Segoe UI", 9, "bold")).grid(row=r, column=0, columnspan=3, sticky="w")
-        r += 1
-        ttk.Label(tab, text="Default is the sheet name.", foreground="#555").grid(row=r, column=0, columnspan=3, sticky="w")
-        r += 1
-        ttk.Checkbutton(tab, text="Include the data file name",
-                        variable=self.incl_var).grid(row=r, column=0, columnspan=3, sticky="w")
-        for text, var in (("Prefix", self.prefix_var), ("Suffix", self.suffix_var)):
-            r += 1
-            ttk.Label(tab, text=text).grid(row=r, column=0, sticky="w", pady=2)
-            ttk.Entry(tab, textvariable=var).grid(row=r, column=1, columnspan=2, sticky="ew", padx=8)
-        r += 1
-        ttk.Label(tab, text="Custom name").grid(row=r, column=0, sticky="w", pady=2)
-        self.custom_entry = ttk.Entry(tab, textvariable=self.custom_var)
-        self.custom_entry.grid(row=r, column=1, columnspan=2, sticky="ew", padx=8)
-        r += 1
-        self.custom_hint = ttk.Label(tab, text="", foreground="#555")
-        self.custom_hint.grid(row=r, column=1, columnspan=2, sticky="w", padx=8)
-        r += 1
-        ttk.Label(tab, text="If the file exists").grid(row=r, column=0, sticky="w", pady=(6, 0))
-        ttk.Combobox(tab, textvariable=self.exists_var, state="readonly", width=22,
-                     values=list(EXISTS_LABELS.values())).grid(row=r, column=1, columnspan=2, sticky="w", padx=8, pady=(6, 0))
+    # ---- tab 04: output
+    def _tab_output(self, t):
+        self._group(t, "Folder", first=True)
+        r = self._row(t)
+        ttk.Entry(r, textvariable=self.out_dir_var).pack(side="left", fill="x", expand=True)
+        PillButton(r, "Browse…", self._browse_out, style="secondary", height=32, padx=16).pack(side="left", padx=(px(8), 0))
 
+        self._group(t, "Image")
+        r = self._row(t)
+        self.type_box = ttk.Combobox(r, textvariable=self.type_var, state="readonly", width=7,
+                                     values=[f.upper() for f in FILE_TYPES])
+        self.type_box.pack(side="left")
+        self.type_box.bind("<<ComboboxSelected>>", lambda e: self._sync_states())
+        ttk.Label(r, text="DPI", style="Field.TLabel").pack(side="left", padx=(px(16), px(6)))
+        ttk.Combobox(r, textvariable=self.dpi_var, state="readonly", width=6,
+                     values=[str(d) for d in DPI_CHOICES]).pack(side="left")
+        self.trans_check = ttk.Checkbutton(t, text="Transparent background", variable=self.trans_var)
+        self.trans_check.pack(anchor="w", pady=(px(8), 0))
+
+        self._group(t, "File names")
+        self._hint(t, "By default each image is named after its sheet.")
+        ttk.Checkbutton(t, text="Put the data file name before the sheet name", variable=self.incl_var).pack(anchor="w", pady=(px(6), 0))
+        self._labeled(t, "Prefix", lambda r: ttk.Entry(r, textvariable=self.prefix_var).pack(side="left", fill="x", expand=True), 13)
+        self._labeled(t, "Suffix", lambda r: ttk.Entry(r, textvariable=self.suffix_var).pack(side="left", fill="x", expand=True), 13)
+        _, self.custom_entry = self._labeled(
+            t, "Custom name", lambda r: (lambda e: (e.pack(side="left", fill="x", expand=True), e)[1])(
+                ttk.Entry(r, textvariable=self.custom_var)), 13)
+        self.custom_hint = self._hint(t, "")
+        self._labeled(t, "If the file exists", lambda r: ttk.Combobox(
+            r, textvariable=self.exists_var, state="readonly", width=22,
+            values=list(EXISTS_LABELS.values())).pack(side="left"), 13)
+
+    # ---- right column
     def _build_preview(self, parent):
-        box = ttk.LabelFrame(parent, text="Data preview", padding=6)
-        box.pack(fill="both", expand=True)
-        top = ttk.Frame(box)
-        top.pack(fill="x", pady=(0, 4))
-        ttk.Label(top, text="Sheet").pack(side="left")
-        self.preview_box = ttk.Combobox(top, textvariable=self.preview_var, state="readonly", width=30)
-        self.preview_box.pack(side="left", padx=6)
-        self.preview_box.bind("<<ComboboxSelected>>", lambda e: self._refresh_preview())
-        ttk.Label(top, textvariable=self.preview_info, foreground="#555").pack(side="left", padx=8)
-        grid = ttk.Frame(box)
+        card = Card(parent, autoheight=False, padx=14, pady=12)
+        card.grid(row=0, column=0, sticky="nsew", pady=(0, px(12)))
+        top = tk.Frame(card.body, bg=C.card)
+        top.pack(fill="x", pady=(0, px(8)))
+        kicker(top, "", "Data preview").pack(side="left")
+        self.preview_box = ttk.Combobox(top, textvariable=self.preview_var, state="readonly", width=26)
+        self.preview_box.pack(side="right")
+        self.preview_box.bind("<<ComboboxSelected>>", lambda e: self._on_preview_sheet())
+        ttk.Label(top, text="Sheet", style="Field.TLabel").pack(side="right", padx=(0, px(8)))
+        ttk.Label(card.body, textvariable=self.preview_info, style="Hint.TLabel").pack(anchor="w", pady=(0, px(6)))
+        grid = tk.Frame(card.body, bg=C.card)
         grid.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(grid, show="headings", height=9)
+        self.tree = ttk.Treeview(grid, show="headings", height=6)
         vs = ttk.Scrollbar(grid, orient="vertical", command=self.tree.yview)
         hs = ttk.Scrollbar(grid, orient="horizontal", command=self.tree.xview)
         self.tree.configure(yscrollcommand=vs.set, xscrollcommand=hs.set)
+        self.tree.tag_configure("odd", background="#1b1d2d")
         self.tree.grid(row=0, column=0, sticky="nsew")
         vs.grid(row=0, column=1, sticky="ns")
         hs.grid(row=1, column=0, sticky="ew")
@@ -232,76 +394,62 @@ class App(tk.Tk):
         grid.columnconfigure(0, weight=1)
 
     def _build_log(self, parent):
-        box = ttk.LabelFrame(parent, text="Results", padding=6)
-        box.pack(fill="both", expand=True, pady=(6, 0))
-        self.log = ScrolledText(box, height=9, state="disabled", wrap="word", font=("Consolas", 9))
-        self.log.pack(fill="both", expand=True)
-        self.log.tag_config("ok", foreground="#1b7f3b")
-        self.log.tag_config("skip", foreground="#9a6700")
-        self.log.tag_config("err", foreground="#b3261e")
-        self.log.tag_config("info", foreground="#333333")
+        card = Card(parent, autoheight=False, padx=14, pady=12)
+        card.grid(row=1, column=0, sticky="nsew")
+        kicker(card.body, "", "Results").pack(anchor="w", pady=(0, px(8)))
+        frame = tk.Frame(card.body, bg=C.input)
+        frame.pack(fill="both", expand=True)
+        self.log = tk.Text(frame, height=6, state="disabled", wrap="word", bg=C.input, fg=C.text,
+                           font=mono(9), relief="flat", bd=0, padx=10, pady=8, highlightthickness=0,
+                           insertbackground=C.text, selectbackground=C.indigo)
+        bar = ttk.Scrollbar(frame, orient="vertical", command=self.log.yview)
+        self.log.configure(yscrollcommand=bar.set)
+        bar.pack(side="right", fill="y")
+        self.log.pack(side="left", fill="both", expand=True)
+        for tag, col in (("ok", C.ok), ("skip", C.warn), ("err", C.err), ("info", C.muted)):
+            self.log.tag_config(tag, foreground=col)
 
-    def _build_run_row(self):
-        frame = ttk.Frame(self, padding=(10, 4, 10, 10))
-        frame.pack(fill="x")
-        row = ttk.Frame(frame)
-        row.pack(fill="x")
-        self.gen_btn = ttk.Button(row, text="Generate maps", command=self.generate)
-        self.gen_btn.pack(side="left")
-        self.cancel_btn = ttk.Button(row, text="Cancel", command=self.cancel, state="disabled")
-        self.cancel_btn.pack(side="left", padx=8)
-        self.folder_btn = ttk.Button(row, text="Open output folder", command=self._open_output_folder,
-                                     state="disabled")
-        if hasattr(os, "startfile"):                     # Windows only
-            self.folder_btn.pack(side="left")
-        ttk.Label(row, textvariable=self.status_var).pack(side="left", padx=12)
-        self.progress = ttk.Progressbar(frame, orient="horizontal", mode="determinate")
-        self.progress.pack(fill="x", pady=(6, 0))
-
-    # ================================================================== mode handling
-    def _on_mode_change(self):
-        self._save_settings()                            # remember the mode we are leaving
-        self.preset = presets.MODES[self.mode_var.get()]
-        self._shown_mode = self.preset.name
-        self._apply_saved(self.store.mode(self.preset.name))
-        self._apply_mode_ui()
-        if self.session.is_open:
-            self._after_data_change(reset_labels=True)
-
-    def _apply_mode_ui(self):
-        p = self.preset
-        self.mode_desc.config(text=p.description)
-        self.mode_var.set(p.name)
-        if p.customizable:
-            self.fixed_panel.pack_forget()
-            self.tabs.pack(fill="both", expand=True)
-        else:
-            self.tabs.pack_forget()
-            self.fixed_panel.pack(fill="x")
-            self._refresh_fixed_text()
-        self._refresh_buttons()
-
-    def _refresh_fixed_text(self):
-        p = self.preset
-        n = len(self.session.sheets)
-        sheets = f"all {n} sheet(s) of the file" if self.session.is_open else "every sheet of the file"
-        pattern = p.naming.pattern.replace("{file}", "<file>").replace("{sheet}", "<sheet>")
-        self.fixed_text.config(text=(
-            "Nothing to set up: open a file and press Generate.\n\n"
-            f"•  Maps are made for {sheets}.\n"
-            "•  Row 1 = column titles; X, Y, Z are found by header name, else the first three columns.\n"
-            f"•  Output: {p.output.file_type.upper()}, {p.output.dpi} DPI, saved next to the data file "
-            f"as {pattern}.{p.output.file_type}\n"
-            "•  Plot style is fixed."))
-
-    def _refresh_buttons(self):
+    # ================================================================== state sync
+    def _sync_states(self):
         busy = self.worker is not None and self.worker.running
-        can_run = self.session.is_open and not busy
-        self.gen_btn.config(state="normal" if can_run else "disabled")
-        self.cancel_btn.config(state="normal" if busy else "disabled")
-        self.open_btn.config(state="disabled" if busy else "normal")
-        self.mode_box.config(state="disabled" if busy else "readonly")
-        self.folder_btn.config(state="normal" if (self.last_output_dir and not busy) else "disabled")
+        grid = self.layout_var.get() == "grid"
+        is_open = self.session.is_open
+        self.gen_btn.set_enabled(is_open and not busy)
+        self.cancel_btn.set_enabled(busy)
+        self.open_btn.set_enabled(not busy)
+        self.folder_btn.set_enabled(bool(self.last_output_dir) and not busy)
+        # data tab
+        self.header_check.state(["disabled"] if grid else ["!disabled"])
+        for cb in self.col_boxes:
+            cb.config(state="disabled" if grid or not is_open else "readonly")
+        # plot tab
+        number = self.levmode_var.get() == "number"
+        self.levels_spin.state(["!disabled"] if number else ["disabled"])
+        for e in self.custom_entries:
+            e.state(["disabled"] if number else ["!disabled"])
+        # output tab
+        jpg = self.type_var.get() == "JPG"
+        if jpg:
+            self.trans_var.set(False)
+        self.trans_check.state(["disabled"] if jpg else ["!disabled"])
+        self._sync_sheet_state()
+
+    def _single_sheet(self) -> bool:
+        return sum(v.get() for v in self.sheet_vars.values()) == 1
+
+    def _sync_sheet_state(self):
+        for cb in self.sheet_checks:
+            cb.state(["disabled"] if self.all_var.get() else ["!disabled"])
+        one = self._single_sheet()
+        self.custom_entry.config(state="normal" if one else "disabled")
+        self.custom_hint.config(text="" if one else "Custom name is available when a single sheet is processed.")
+
+    def _draw_cmap(self):
+        try:
+            cmap = matplotlib.colormaps[self.cmap_var.get() + ("_r" if self.rev_var.get() else "")]
+        except KeyError:
+            return
+        theme.gradient_strip(self.cmap_strip, [matplotlib.colors.to_hex(cmap(i / 59)) for i in range(60)])
 
     # ================================================================== file + preview
     def open_file(self):
@@ -312,33 +460,46 @@ class App(tk.Tk):
             filetypes=[("Data files", exts), ("All files", "*.*")])
         if not path:
             return
-        header = self.header_var.get() if self.preset.customizable else self.preset.header_row
         try:
-            self.session.open(path, header=header)
+            self._read_reading()                           # sync header/skip/layout into the session
+            self.session.open(path)
+        except OptionError as e:
+            messagebox.showwarning("Data options", str(e))
+            return
         except DataLoadError as e:
             messagebox.showerror("Cannot open file", str(e))
             return
         self.store.set("last_open_dir", os.path.dirname(path))
-        self.path_var.set(path)
+        self.file_var.set(f"{os.path.basename(path)}  ·  {len(self.session.sheets)} sheet(s)")
         if not self.out_dir_var.get() or not os.path.isdir(self.out_dir_var.get()):
             self.out_dir_var.set(os.path.dirname(path))
         self._log(f"Loaded {os.path.basename(path)}: {len(self.session.sheets)} sheet(s)", "info")
+        self.status_var.set("File loaded. Check the preview, then Generate.")
         self._build_sheet_list()
         self.preview_box.config(values=self.session.sheets)
         self.preview_var.set(self.session.sheets[0])
-        self._after_data_change(reset_labels=True)
-        self._refresh_fixed_text()
-        self._refresh_buttons()
-
-    def _after_data_change(self, reset_labels: bool = False):
-        if reset_labels:
-            self._edited = {k: False for k in LABEL_KEYS}
+        self._cols_edited = False
+        self._edited = {k: False for k in LABEL_KEYS}
         self._refresh_preview()
+        self._sync_states()
 
-    def _on_header_toggle(self):
+    def _read_reading(self):
+        """Push the Data-tab reading options into the session. Raises OptionError if invalid."""
+        top = parse_int(self.skip_top_var.get(), "Skip rows at top", 0, 100000)
+        bottom = parse_int(self.skip_bottom_var.get(), "Ignore rows at bottom", 0, 100000)
+        self.session.set_reading(self.header_var.get(), top, bottom, self.layout_var.get())
+
+    def _on_reading_change(self):
+        self._sync_states()
         if not self.session.is_open:
             return
-        self.session.set_header(self.header_var.get())
+        try:
+            self._read_reading()
+        except OptionError:
+            return                                          # half-typed number; wait for a valid one
+        self._refresh_preview()
+
+    def _on_preview_sheet(self):
         self._refresh_preview()
 
     def _refresh_preview(self):
@@ -357,24 +518,85 @@ class App(tk.Tk):
             return
         ids = [f"c{i}" for i in range(len(cols))]
         self.tree["columns"] = ids
-        for cid, title, i in zip(ids, cols, range(len(cols))):
+        for i, (cid, title) in enumerate(zip(ids, cols)):
             longest = max([len(title)] + [len(r[i]) for r in rows])
             self.tree.heading(cid, text=title)
-            self.tree.column(cid, width=max(60, min(240, longest * 8 + 16)), stretch=False, anchor="w")
-        for r in rows:
-            self.tree.insert("", "end", values=r)
+            self.tree.column(cid, width=max(70, min(260, longest * 8 + 22)), stretch=False, anchor="w")
+        for n, r in enumerate(rows):
+            self.tree.insert("", "end", values=r, tags=("odd",) if n % 2 else ())
         self.preview_info.set(f"first {len(rows)} of {total} rows · {len(cols)} columns")
+        self._update_columns(sheet)
         self._prefill_labels()
+
+    # ================================================================== columns
+    def _update_columns(self, sheet):
+        """Fill the X/Y/Z dropdowns for the previewed sheet and show the data check."""
+        grid = self.layout_var.get() == "grid"
+        names = [] if grid else self.session.column_names(sheet)
+        for cb in self.col_boxes:
+            cb.config(values=names)
+        self._filling = True
+        try:
+            if grid:
+                for v, n in zip(self.col_vars, "XYZ"):
+                    v.set(f"{n} (from grid)")
+            elif not self._cols_edited:
+                for v, c in zip(self.col_vars, self.session.guess_columns(sheet)):
+                    v.set(c or "")
+            else:                                            # keep picks; same position if name is absent
+                old = [v.get() for v in self.col_vars]
+                pos = getattr(self, "_positions", None) or (0, 1, 2)
+                for i, v in enumerate(self.col_vars):
+                    v.set(old[i] if old[i] in names else (names[pos[i]] if pos[i] < len(names) else ""))
+        finally:
+            self._filling = False
+        self._update_check(sheet)
+
+    def _chosen_columns(self):
+        if self.layout_var.get() == "grid" or not self._cols_edited:
+            return None, None
+        cols = tuple(v.get() for v in self.col_vars)
+        if not all(cols):
+            return None, None
+        names = self.session.column_names(self.preview_var.get()) if self.session.is_open else []
+        pos = tuple(names.index(c) for c in cols) if all(c in names for c in cols) else None
+        return cols, pos
+
+    def _on_column_pick(self):
+        self._cols_edited = True
+        _, pos = self._chosen_columns()
+        self._positions = pos
+        self._update_check(self.preview_var.get())
+        self._prefill_labels()
+
+    def _update_check(self, sheet):
+        label = self.col_status_label
+        if not self.session.is_open:
+            self.col_status.set("")
+            return
+        if self.layout_var.get() == "grid":
+            ok, text = self.session.check(sheet)
+            self.col_status.set(f"Grid: first row = X, first column = Y, cells = Z.  {text}")
+        else:
+            cols, pos = self._chosen_columns()
+            if cols and len(set(cols)) < 3:
+                ok, text = False, "X, Y and Z must be three different columns."
+            else:
+                ok, text = self.session.check(sheet, cols, pos)
+            self.col_status.set(text)
+        label.config(style="Ok.TLabel" if ok else "Bad.TLabel")
 
     # ================================================================== sheet checklist
     def _build_sheet_list(self):
-        for w in self.sheet_inner.winfo_children():
+        for w in self.sheet_scroll.inner.winfo_children():
             w.destroy()
         self.sheet_vars, self.sheet_checks = {}, []
         for name in self.session.sheets:
             var = tk.BooleanVar(value=True)
-            cb = ttk.Checkbutton(self.sheet_inner, text=name, variable=var, command=self._on_sheet_toggle)
-            cb.pack(anchor="w", padx=4)
+            row = tk.Frame(self.sheet_scroll.inner, bg=C.input)
+            row.pack(fill="x", padx=6)
+            cb = ttk.Checkbutton(row, text=name, variable=var, command=self._on_sheet_toggle, style="List.TCheckbutton")
+            cb.pack(anchor="w")
             self.sheet_vars[name] = var
             self.sheet_checks.append(cb)
         self.all_var.set(True)
@@ -390,27 +612,18 @@ class App(tk.Tk):
         self.all_var.set(all(v.get() for v in self.sheet_vars.values()))
         self._sync_sheet_state()
 
-    def _single_sheet(self) -> bool:
-        return sum(v.get() for v in self.sheet_vars.values()) == 1
-
-    def _sync_sheet_state(self):
-        for cb in self.sheet_checks:
-            cb.state(["disabled"] if self.all_var.get() else ["!disabled"])
-        one = self._single_sheet()
-        self.custom_entry.config(state="normal" if one else "disabled")
-        self.custom_hint.config(text="" if one else "(single sheet only)")
-
     # ================================================================== labels
     def _label_typed(self, key):
         if not self._filling:
             self._edited[key] = True
 
     def _prefill_labels(self):
-        if not self.session.is_open or not self.preset.customizable:
+        if not self.session.is_open:
             return
         sheet = self.preview_var.get()
+        cols, _ = self._chosen_columns()
         try:
-            texts = self.session.default_labels(sheet, self.preset)
+            texts = self.session.default_labels(sheet, cols)
         except DataLoadError:
             return
         self._filling = True
@@ -425,57 +638,99 @@ class App(tk.Tk):
         self._edited = {k: False for k in LABEL_KEYS}
         self._prefill_labels()
 
-    # ================================================================== output options
     def _browse_out(self):
         start = self.out_dir_var.get()
         d = filedialog.askdirectory(title="Output folder", initialdir=start if os.path.isdir(start) else None)
         if d:
             self.out_dir_var.set(os.path.normpath(d))
 
-    def _sync_type(self):
-        jpg = self.type_var.get() == "JPG"
-        if jpg:
-            self.trans_var.set(False)
-        self.trans_check.state(["disabled"] if jpg else ["!disabled"])
-
     # ================================================================== options <-> widgets
+    def _limits(self, lo, hi, name):
+        a = parse_float(self.lim_vars[lo].get(), f"{name} axis min", blank_ok=True)
+        b = parse_float(self.lim_vars[hi].get(), f"{name} axis max", blank_ok=True)
+        if (a is None) != (b is None):
+            raise OptionError(f"{name} axis limits: fill in both min and max, or leave both empty.")
+        return None if a is None else (a, b)
+
     def _collect_options(self) -> UserOptions:
-        exists = next((k for k, v in EXISTS_LABELS.items() if v == self.exists_var.get()), "ask")
+        """Read every widget into a typed UserOptions. Raises OptionError with a friendly message."""
+        top = parse_int(self.skip_top_var.get(), "Skip rows at top", 0, 100000)
+        bottom = parse_int(self.skip_bottom_var.get(), "Ignore rows at bottom", 0, 100000)
+        custom = self.levmode_var.get() == "custom"
+        fs = parse_float(self.font_var.get(), "Font size", blank_ok=True)
+        if fs is not None and not 4 <= fs <= 40:
+            raise OptionError("Font size: must be between 4 and 40.")
+        figw, figh = (parse_float(v.get(), n) for v, n in ((self.figw_var, "Figure width"), (self.figh_var, "Figure height")))
+        if not (2 <= figw <= 40 and 2 <= figh <= 40):
+            raise OptionError("Figure size: width and height must be between 2 and 40 inches.")
+        def level_value(var, name):
+            if custom:
+                return parse_float(var.get(), name)
+            try:
+                return parse_float(var.get(), name, blank_ok=True)
+            except OptionError:
+                return None                                 # unused while "Number of levels" is chosen
+
+        cols, pos = self._chosen_columns()
         labels = {k: (self.label_vars[k].get() if self._edited[k] else None) for k in LABEL_KEYS}
         return UserOptions(
             sheets=[s for s in self.session.sheets if self.sheet_vars.get(s) and self.sheet_vars[s].get()],
-            output_dir=self.out_dir_var.get().strip(), header=self.header_var.get(),
+            output_dir=self.out_dir_var.get().strip(),
+            header=self.header_var.get(), skip_top=top, skip_bottom=bottom, layout=self.layout_var.get(),
+            columns=cols, column_positions=pos,
+            interpolation=_key_of(INTERP_LABELS, self.interp_var.get(), "cubic"),
+            grid_resolution=parse_int(self.res_var.get(), "Grid resolution", 10, 2000),
+            fill_mode=self.fill_var.get(), custom_levels=custom,
+            levels=parse_int(self.levels_var.get(), "Number of levels", 2, 100) if not custom else 15,
+            level_min=level_value(self.lmin_var, "Custom levels: min"),
+            level_max=level_value(self.lmax_var, "Custom levels: max"),
+            level_step=level_value(self.lstep_var, "Custom levels: step"),
+            cmap=self.cmap_var.get(), reverse_cmap=self.rev_var.get(),
+            xlim=self._limits("xmin", "xmax", "X"), ylim=self._limits("ymin", "ymax", "Y"),
+            font_size=fs, fig_w=figw, fig_h=figh,
             file_type=self.type_var.get().lower(), dpi=int(self.dpi_var.get()),
             transparent=self.trans_var.get(), include_file_name=self.incl_var.get(),
             prefix=self.prefix_var.get(), suffix=self.suffix_var.get(),
             custom_name=self.custom_var.get() if self._single_sheet() else "",
-            on_exists=exists, **labels)
+            on_exists=_key_of(EXISTS_LABELS, self.exists_var.get(), "ask"),
+            **{k: v.get() for k, v in self.flags.items()}, **labels)
 
     def _apply_saved(self, raw: dict):
         s = clean_saved(raw)
-        d = self.preset.output
-        self.header_var.set(s.get("header", self.preset.header_row))
+        p, o = DEFAULT_PLOT, DEFAULT_OUTPUT
         folder = s.get("output_dir", "")
         self.out_dir_var.set(folder if folder and os.path.isdir(folder) else
                              (os.path.dirname(self.session.path) if self.session.is_open else ""))
-        self.type_var.set(s.get("file_type", d.file_type).upper())
-        self.dpi_var.set(str(s.get("dpi", d.dpi)))
-        self.trans_var.set(s.get("transparent", d.transparent))
-        self.incl_var.set(s.get("include_file_name", self.preset.naming.pattern.startswith("{file}")))
+        self.header_var.set(s.get("header", True))
+        self.layout_var.set(s.get("layout", "columns"))
+        self.type_var.set(s.get("file_type", o.file_type).upper())
+        self.dpi_var.set(str(s.get("dpi", o.dpi)))
+        self.trans_var.set(s.get("transparent", o.transparent))
+        self.incl_var.set(s.get("include_file_name", False))
         self.prefix_var.set(s.get("prefix", ""))
         self.suffix_var.set(s.get("suffix", ""))
-        self.exists_var.set(EXISTS_LABELS[s.get("on_exists", self.preset.naming.on_exists)])
-        self.custom_var.set("")
-        self._sync_type()
-        if self.session.is_open:
-            self.session.set_header(self.header_var.get() if self.preset.customizable
-                                    else self.preset.header_row)
+        self.exists_var.set(EXISTS_LABELS[s.get("on_exists", "ask")])
+        self.interp_var.set(INTERP_LABELS[s.get("interpolation", p.interpolation)])
+        self.res_var.set(str(s.get("grid_resolution", p.grid_resolution)))
+        self.fill_var.set(s.get("fill_mode", p.fill_mode))
+        self.levmode_var.set("custom" if s.get("custom_levels") else "number")
+        self.levels_var.set(str(s.get("levels", p.levels)))
+        for var, key in ((self.lmin_var, "level_min"), (self.lmax_var, "level_max"), (self.lstep_var, "level_step")):
+            var.set(f"{s[key]:g}" if key in s else "")
+        self.cmap_var.set(s.get("cmap", p.cmap))
+        self.rev_var.set(s.get("reverse_cmap", p.reverse_cmap))
+        for key, var in self.flags.items():
+            var.set(s.get(key, getattr(p, "mask_outside_hull" if key == "mask_hull" else key)))
+        self.font_var.set(f"{s['font_size']:g}" if "font_size" in s else "10")
+        self.figw_var.set(f"{s.get('fig_w', p.figsize[0]):g}")
+        self.figh_var.set(f"{s.get('fig_h', p.figsize[1]):g}")
+        self._draw_cmap()
 
     def _save_settings(self):
-        self.store.set("last_mode", self._shown_mode)
-        prev = presets.MODES.get(self._shown_mode)
-        if prev and prev.customizable:
-            self.store.set_mode(prev.name, to_saved(self._collect_options()))
+        try:
+            self.store.set_values(to_saved(self._collect_options()))
+        except (OptionError, ValueError):
+            pass                                            # keep the previously saved values
         self.store.save()
 
     # ================================================================== run
@@ -483,28 +738,33 @@ class App(tk.Tk):
         if not self.session.is_open:
             messagebox.showinfo("Info", "No file selected.")
             return
-        opts = self._collect_options()
-        problem = validate(self.preset, self.session, opts)
+        try:
+            self._read_reading()
+            opts = self._collect_options()
+        except OptionError as e:
+            messagebox.showwarning("Check your settings", str(e))
+            return
+        problem = validate(self.session, opts)
         if problem:
             messagebox.showwarning("Cannot generate", problem)
             return
-        cfg = make_run_config(self.preset, self.session, opts)
+        cfg = make_run_config(self.session, opts)
         self._save_settings()
         self.last_output_dir = cfg.output_dir
         self.progress["maximum"] = len(cfg.sheets)
         self.progress["value"] = 0
         self.status_var.set("Starting map generation…")
-        self._log(f"--- Generating {len(cfg.sheets)} sheet(s) [{self.preset.name}] → {cfg.output_dir} ---", "info")
+        self._log(f"--- Generating {len(cfg.sheets)} sheet(s) → {cfg.output_dir} ---", "info")
         self.worker = BatchWorker(cfg)
         self.worker.start()
-        self._refresh_buttons()
+        self._sync_states()
         self.after(100, self._poll)
 
     def cancel(self):
         if self.worker:
             self.worker.cancel()
             self.status_var.set("Cancelling after the current sheet…")
-            self.cancel_btn.config(state="disabled")
+            self.cancel_btn.set_enabled(False)
 
     def _poll(self):
         worker = self.worker
@@ -532,7 +792,7 @@ class App(tk.Tk):
                 self.worker = None
                 self._log(f"Unexpected error: {ev[1]}", "err")
                 self.status_var.set("Stopped: unexpected error")
-                self._refresh_buttons()
+                self._sync_states()
                 messagebox.showerror("Unexpected error", ev[1])
                 return
         self.after(100, self._poll)
@@ -550,12 +810,12 @@ class App(tk.Tk):
     def _finish(self, results: List[SheetResult], cancelled: bool):
         saved = [r for r in results if r.status == "saved"]
         self.worker = None
-        self._refresh_buttons()
+        self._sync_states()
         if cancelled:
             self.status_var.set(f"Cancelled ({len(saved)} map(s) saved)")
             self._log("Cancelled by user.", "skip")
         elif saved:
-            self.status_var.set("✅ All maps generated successfully!" if len(saved) == len(results)
+            self.status_var.set("All maps generated." if len(saved) == len(results)
                                 else f"Done: {len(saved)} of {len(results)} sheet(s) saved")
         else:
             self.status_var.set("No contour maps were generated.")
@@ -585,4 +845,10 @@ class App(tk.Tk):
 
 
 def main():
+    if os.name == "nt":                                    # crisp text on high-DPI screens
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)
+        except Exception:
+            pass
     App().mainloop()

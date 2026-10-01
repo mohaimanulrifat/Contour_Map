@@ -1,7 +1,7 @@
 """Interpolation and plotting. No GUI, no file dialogs, no pyplot (thread-safe, embeddable).
 
 render_figure() turns scattered x/y/z points + PlotSettings into a matplotlib Figure.
-save_figure() writes it to disk. Both are shared by every mode.
+save_figure() writes it to disk.
 """
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
@@ -12,7 +12,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from scipy.interpolate import griddata
 
-from .presets import OutputSettings, PlotSettings
+from .defaults import OutputSettings, PlotSettings
 
 INTERPOLATIONS = ("linear", "cubic", "nearest")
 FILE_TYPES = ("png", "jpg", "pdf", "svg", "tiff")
@@ -46,7 +46,7 @@ def interpolate(x, y, z, method: str = "cubic", resolution: int = 200,
     """Interpolate scattered points onto a regular `resolution` x `resolution` grid.
 
     'cubic' falls back to 'linear' when cubic fails or returns nothing (small / awkward
-    data sets) -- this is the behaviour of the original app and is kept for every mode.
+    data sets); the fallback is reported in GridResult.notes.
     """
     x, y, z = (np.asarray(a, dtype=float) for a in (x, y, z))
     if method not in INTERPOLATIONS:
@@ -113,7 +113,7 @@ def _levels(s: PlotSettings):
 
 def _cmap(s: PlotSettings):
     if not s.reverse_cmap:
-        return s.cmap                      # pass the name through, exactly as the original did
+        return s.cmap                      # pass the name straight to matplotlib
     try:
         return colormaps[s.cmap].reversed()
     except KeyError:
@@ -136,7 +136,7 @@ def render_figure(x, y, z, settings: PlotSettings) -> RenderResult:
     levels = _levels(s)
     cmap = _cmap(s)
 
-    # Order matches the original app: filled -> colorbar -> lines -> labels.
+    # Draw order: filled -> colorbar -> lines -> labels.
     cb = lines = filled = None
     try:
         if s.fill_mode in ("filled", "both"):

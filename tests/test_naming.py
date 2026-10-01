@@ -2,8 +2,7 @@ import os
 
 import pytest
 
-from contourmap.naming import (NamingOptions, build_basename, numbered, resolve_path,
-                               sanitize_legacy, sanitize_windows)
+from contourmap.naming import NamingOptions, build_basename, numbered, resolve_path, sanitize_windows
 
 
 def test_sanitize_windows_replaces_illegal_characters():
@@ -23,11 +22,6 @@ def test_sanitize_windows_trailing_dots_spaces_and_empty():
     assert len(sanitize_windows("x" * 500)) <= 150
 
 
-def test_legacy_matches_original_rule():
-    assert sanitize_legacy("Wall (B)") == "Wall _B_"
-    assert sanitize_legacy("a.b/c") == "a_b_c"
-
-
 def test_basename_default_is_sheet_name():
     assert build_basename(NamingOptions(), "book", "Sheet 1") == "Sheet 1"
 
@@ -41,11 +35,6 @@ def test_custom_name_only_for_single_sheet():
     o = NamingOptions(custom_name="my map", prefix="x_")
     assert build_basename(o, "book", "S1", single_sheet=True) == "x_my map"
     assert build_basename(o, "book", "S1", single_sheet=False) == "x_S1"
-
-
-def test_legacy_basename_is_exactly_the_original():
-    o = NamingOptions(pattern="{file}_{sheet}", legacy=True)
-    assert build_basename(o, "half_cell_sample", "Wall (B)") == "half_cell_sample_Wall _B_"
 
 
 def test_resolve_path_free_name_is_unchanged(tmp_path):
