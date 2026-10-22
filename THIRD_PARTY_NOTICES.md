@@ -1,6 +1,6 @@
 # Third-party notices
 
-Contour Map Generator is free to use, and its own code is closed source. It is built on the open-source components below, each under its own licence. Those licences apply to those components, not to Contour Map Generator's own code.
+Contour Map Generator is free to use, and its own code is public to read but not open source (all rights reserved, see TERMS.md). It is built on the open-source components below, each under its own licence. Those licences apply to those components, not to Contour Map Generator's own code.
 
 The full licence texts are in the `licenses` folder next to the app, and in the app under Help, Third-party licences.
 
