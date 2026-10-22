@@ -36,10 +36,10 @@ You may give the app to other people, as long as:
 Nobody may sell the app, charge for downloading it, or include it in something that is
 sold. This applies to the app itself. It does not stop you selling the maps you make with it.
 
-## 5. No changing or taking apart
+## 5. No changing the app
 
-You may not modify the app, or try to take it apart to recreate its source code, except
-where the law says you are allowed to.
+You may not modify the app, or share a changed copy of it, except where the law says you
+are allowed to.
 
 ## 6. No warranty
 
@@ -53,9 +53,17 @@ As far as the law allows, the author is not responsible for any loss or damage t
 comes from using the app, or from not being able to use it. This includes lost work,
 lost income, wrong decisions made from a map, and problems with files or computers.
 
-## 8. The app's own code is closed source
+## 8. The app's own code can be read, but is not open source
 
-The app is free to use, but its own source code is private and is not shared.
+The app's source code is public on GitHub, so anyone can read it, check how it works and
+suggest changes:
+https://github.com/mohaimanulrifat/Contour_Map
+
+Being able to read the code does not give you a licence to use it. The code stays
+© Mohaimanul Islam Rifat, all rights reserved. You may not copy it, change it, build your
+own version of the app from it, or use parts of it in other software, without the
+author's written permission. Viewing it on GitHub, and making a fork there to propose a
+change, is allowed.
 
 ## 9. Open-source parts keep their own licences
 

@@ -93,7 +93,7 @@ Yes, for personal and commercial work. The maps you make are yours. See [TERMS.m
 The app is not signed with a paid code-signing certificate, and Windows has not seen it on many PCs yet, so it shows a warning for programs it does not recognise. The warning says nothing about what the program does. You can check your download against the published checksum, below.
 
 **Is the source code available?**
-No. The app is free to use, but the code is private. The open-source parts inside it keep their own licences, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+You can read it here on GitHub, but it is not open source: the code is all rights reserved, so you may not copy it or build your own version from it without permission (see [TERMS.md](TERMS.md), section 8). Suggestions and fixes are welcome as issues. The open-source parts inside it keep their own licences, listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 **Which download should I choose, the zip or the portable file?**
 The zip starts faster and keeps its settings next to the app. The portable file is a single `.exe`, handy on a USB stick or to email around inside a team. It unpacks itself in a temporary folder each time it starts, so it takes a few seconds longer.
